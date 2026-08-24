@@ -85,7 +85,7 @@ def test_guided_student_direct_configuration_uses_visible_input(
     assert prompts == [
         "SenseCore 账号: ",
         "SenseCore 密码: ",
-        "请输入 1 或 2: ",
+        "请选择身份（1=正式学生/标准资源，2=RA/闲时资源）: ",
         "\n是否使用 SSH 代理？[y/N]: ",
     ]
     rendered = capsys.readouterr().out

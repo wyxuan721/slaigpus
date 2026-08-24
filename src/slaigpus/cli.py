@@ -3196,7 +3196,9 @@ def _prompt_account_type() -> str:
     print("  1. 正式学生（ACP 默认使用标准资源）")
     print("  2. RA（ACP 默认使用闲时资源）")
     while True:
-        value = _visible_configuration_input("请输入 1 或 2: ").strip().lower()
+        value = _visible_configuration_input(
+            "请选择身份（1=正式学生/标准资源，2=RA/闲时资源）: "
+        ).strip().lower()
         if value in {"1", "student", "正式学生", "学生"}:
             return "student"
         if value in {"2", "ra"}:

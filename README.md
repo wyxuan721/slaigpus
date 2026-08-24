@@ -188,7 +188,7 @@ slaigpus configure
 $ slaigpus configure
 SenseCore 账号: YOUR_IAM_ACCOUNT
 SenseCore 密码: YOUR_PASSWORD
-请输入 1 或 2: 2
+请选择身份（1=正式学生/标准资源，2=RA/闲时资源）: 2
 是否使用 SSH 代理？[y/N]: y
 请输入 SSH Host 别名: sensecore-proxy
 ```
