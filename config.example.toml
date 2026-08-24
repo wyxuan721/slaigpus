@@ -1,0 +1,57 @@
+
+# Run `slaigpus configure` to create or update the managed SenseCore settings.
+# `account_type = "student"` makes ACP default to standard resources; "ra"
+# makes ACP default to spot resources. SenseCore is direct by default. To
+# reach it through SSH, slaigpus needs only an OpenSSH Host alias; configure HostName,
+# User, Port, IdentityFile, ProxyJump, and authentication in ~/.ssh/config.
+# SenseCore usernames/passwords are intentionally not valid TOML fields. On
+# every machine that needs automatic login, run this interactively:
+#   slaigpus configure
+# The private JSON defaults to ~/.config/slaigpus/credentials.json (or an
+# absolute $XDG_CONFIG_HOME/slaigpus/credentials.json), is mode 0600, and must
+# never be copied into this repository or committed to Git.
+
+[sensecore]
+account_type = "student"
+
+[sensecore.network]
+# "direct" starts no SSH process and explicitly disables Chrome proxying.
+mode = "direct"
+# For SSH SOCKS instead, replace the line above and uncomment the alias:
+# mode = "ssh"
+# ssh_host = "sensecore-proxy"
+
+[defaults]
+# Used when this file is selected explicitly and no site name is given.
+site = "intranet"
+# Values here apply to every site unless overridden below.
+block_local_dns = true
+
+[sites.intranet]
+# Generic named sites use the same direct/SSH model.
+mode = "ssh"
+# Only an alias is needed here. Keep all concrete SSH details in ~/.ssh/config.
+ssh_host = "gateway"
+url = "https://wiki.internal.example.com/"
+# Only the visible work Chrome from `slaigpus viewer --cdp` uses this fixed port.
+# The automatic CCI watcher has a separate persistent automation profile and
+# asks its headless Chrome for a random loopback port.
+cdp_port = 9222
+
+[sites.dashboard]
+mode = "ssh"
+ssh_host = "dashboard-gateway"
+url = "http://dashboard.internal:8080/"
+
+[sites.public]
+mode = "direct"
+url = "https://example.com/"
+
+[sites.legacy]
+mode = "ssh"
+ssh_host = "gateway"
+url = "https://legacy.internal/"
+# Some old intranet apps break when Chrome refuses to resolve names locally.
+# Turn this off if pages hang with ERR_NAME_NOT_RESOLVED.
+block_local_dns = false
+chrome_args = ["--ignore-certificate-errors"]  # self-signed internal CA

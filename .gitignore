@@ -1,0 +1,26 @@
+.DS_Store
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Local configuration and credentials must never enter version control.
+.env
+.env.*
+!.env.example
+config.toml
+slaigpus.toml
+credentials.json
+credentials*.json
+acp-worker*.json
+
+# Local browser/controller artifacts.
+profiles/
+state/
+DevToolsActivePort
+*.log
+playwright-report/
+test-results/

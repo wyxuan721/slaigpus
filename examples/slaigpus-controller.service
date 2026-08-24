@@ -1,0 +1,19 @@
+[Unit]
+Description=slaigpus headless SenseCore CCI controller
+After=network-online.target
+Wants=network-online.target
+# Recover from a short boot/network outage, while throttling fast repeated
+# failures caused by an invalid password, MFA prompt, or changed login page.
+StartLimitIntervalSec=15min
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# Append --cci CCI_NAME_OR_DISPLAY_NAME when the workspace has multiple CCIs.
+ExecStart=%h/.local/bin/slaigpus controller
+UMask=0077
+Restart=on-failure
+RestartSec=60s
+
+[Install]
+WantedBy=default.target
