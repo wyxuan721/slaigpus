@@ -1,14 +1,13 @@
 # slaigpus
 
-`slaigpus` 是面向深圳河套学院（SLAI）商汤大装置环境的命令行自动化工具，不是通用 SenseCore 多项目客户端。它默认直连 SenseCore，也可以通过用户指定的 OpenSSH `Host` 别名建立 SSH SOCKS 代理，提供：
+`slaigpus` 是面向深圳河套学院（SLAI）商汤大装置环境的命令行自动化工具。工具提供：
 
 - 可见 Chrome 工作窗口和持久登录态；
-- headless Chrome 后台控制器；
+- 常驻的 headless CCI 续期控制器；
 - CCI 状态查询、剩余时间计算、私有镜像续期和自动续期开关；
-- ACP 固定硬件规格查询、任务 dry-run/提交和容器日志查询；
-- 可选 SSH SOCKS 隧道、网络环境命令执行和自定义站点支持。
+- ACP 固定硬件规格查询、任务 dry-run/提交和容器日志查询。
 
-所有功能可以在同一台机器上运行，也可以按需在多台机器上独立运行。程序不会跨机器控制 Chrome；每台机器都使用自己的 SSH 隧道、凭据文件、Chrome profile 和本地恢复状态。
+所有功能可以在同一台机器上运行，也可以按需在多台机器上独立运行。程序不会跨机器控制 Chrome；每台机器都使用自己的凭据文件、Chrome profile 和本地恢复状态。
 
 项目要求 Python 3.9 或更高版本。支持 macOS，以及 Ubuntu 22.04/24.04 amd64。
 
@@ -16,9 +15,9 @@
 
 | 命令 | 功能 |
 |---|---|
-| `slaigpus viewer` | 打开可见工作 Chrome，不启动 CCI watcher |
-| `slaigpus controller` | 常驻运行 headless CCI 自动续期控制器 |
-| `slaigpus open` | 同时打开可见工作 Chrome 和独立的后台 CCI watcher |
+| `slaigpus viewer` | 打开可见工作 Chrome，不启动 CCI 续期任务 |
+| `slaigpus controller` | 运行常驻的 headless CCI 续期控制器 |
+| `slaigpus open` | 同时打开可见工作 Chrome 和独立的后台 CCI 续期任务 |
 | `slaigpus configure` | 启动或重新启动引导式配置助手 |
 | `slaigpus credentials set/status/delete` | 配置、检查或删除自动登录凭据 |
 | `slaigpus cci status` | 查询 CCI、实例状态、运行时长和续期时间 |
@@ -29,10 +28,6 @@
 | `slaigpus acp profiles` | 本地列出固定的非 Debug ACP 硬件配置库 |
 | `slaigpus acp submit` | 规划或提交 ACP 任务；默认只做 dry-run |
 | `slaigpus acp logs` | 查询或持续轮询 ACP 容器日志 |
-| `slaigpus up` | SSH 模式下只保持 SOCKS 隧道 |
-| `slaigpus run -- COMMAND` | 使用当前选择的直连或 SSH 网络环境运行命令 |
-| `slaigpus probe` | 只读检查目标能否通过当前网络路径访问 |
-| `slaigpus list` | 列出配置文件中的通用站点 |
 
 `--json` 不是必需参数。人在终端使用时可省略；agent 或脚本需要稳定字段时再添加。
 
@@ -44,7 +39,7 @@
    slaigpus configure
    ```
 
-2. 指定 CCI 并启动自动续期控制器；`--cci` 可以填内部名称或页面显示名称：
+2. 指定 CCI 并启动 CCI 续期控制器；`--cci` 可以填内部名称或页面显示名称：
 
    ```bash
    slaigpus cci auto-renew on
@@ -90,7 +85,7 @@
 slaigpus open --ssh-host sensecore-proxy
 ```
 
-`--direct` 可临时覆盖配置并强制直连。SenseCore 裸命令和仅包含 `--direct`/`--ssh-host` 的命令都使用持久的 `sensecore` profile；显式传入其他 `--url` 时使用独立的 `adhoc` profile。
+`--direct` 可临时覆盖配置并强制直连。
 
 ## 安装与更新
 
@@ -123,7 +118,7 @@ command -v slaigpus
 pipx upgrade slaigpus
 ```
 
-若 systemd 正在运行 controller，更新后重启：
+若 systemd 正在运行 CCI 续期控制器，更新后重启：
 
 ```bash
 systemctl --user restart slaigpus-controller.service
@@ -198,7 +193,7 @@ SenseCore 密码: YOUR_PASSWORD
 - 正式学生：默认标准资源 `standard`；
 - RA：默认闲时资源 `spot`。
 
-配置成功后会生成或更新 TOML 和权限为 `0600` 的私有凭据 JSON。`viewer`、`open`、`controller`、需要登录的 CCI 命令以及 ACP 提交/日志命令发现配置不完整时，也会在交互式终端自动启动同一个助手。agent、systemd 或管道等非交互环境不会等待输入，而会提示先运行 `slaigpus configure`。后续修改账号、密码、身份或代理时再次运行该命令即可；已有 `[sites.*]` 等其他配置会保留。
+配置成功后会生成或更新 TOML 和权限为 `0600` 的私有凭据 JSON。`viewer`、`open`、`controller`、需要登录的 CCI 命令以及 ACP 提交/日志命令发现配置不完整时，也会在交互式终端自动启动同一个助手。agent、systemd 或管道等非交互环境不会等待输入，而会提示先运行 `slaigpus configure`。后续修改账号、密码、身份或代理时再次运行该命令即可。
 
 ### 1. 选择直连或 SSH 代理
 
@@ -223,38 +218,25 @@ mode = "ssh"
 ssh_host = "sensecore-proxy"
 ```
 
-slaigpus 不在 TOML 中接受 `HostName`、用户、端口、密钥路径或 ProxyJump；这些具体配置由用户写入标准的 `~/.ssh/config`：
+具体连接信息写在标准的 `~/.ssh/config` 中，slaigpus 只保存 `Host` 别名：
 
 ```sshconfig
 Host sensecore-proxy
     HostName SSH_GATEWAY_HOST
     User SSH_USER
-    Port 22
     IdentityFile ~/.ssh/id_ed25519
-    IdentitiesOnly yes
-    ServerAliveInterval 30
-    ServerAliveCountMax 3
 ```
 
-需要多级跳板时也在该 Host 下配置 `ProxyJump`。运行后台 controller 的 Unix 账号必须能非交互使用该别名：
-
-```bash
-ssh -o ControlMaster=no -o ControlPath=none \
-  -o BatchMode=yes -o ExitOnForwardFailure=yes \
-  sensecore-proxy true
-```
-
-SSH 密码、密钥内容和 SenseCore 密码都不能写入 `config.toml`。后台服务通常不会继承临时终端里的 `SSH_AUTH_SOCK`，应使用能长期工作的 SSH key 或 agent。
+运行 CCI 续期控制器的系统账号必须能非交互使用该别名。SSH 密码、密钥内容和 SenseCore 密码都不能写入 `config.toml`。
 
 临时覆盖配置：
 
 ```bash
-slaigpus probe --direct
-slaigpus probe --ssh-host sensecore-proxy
+slaigpus controller --direct
 slaigpus controller --ssh-host sensecore-proxy
 ```
 
-`--direct` 与 `--ssh-host` 互斥。修改持久网络模式后应重启已运行的 viewer/controller，因为 Chrome 的代理参数只能在启动时确定。
+`--direct` 与 `--ssh-host` 互斥。修改持久网络模式后应重启已运行的 viewer 或 CCI 续期控制器，因为 Chrome 的代理参数只能在启动时确定。
 
 ### 2. 保存自动登录凭据
 
@@ -296,12 +278,12 @@ slaigpus cci remaining --headless --json
 
 这些命令不会保存镜像、修改 CCI 或创建 ACP 任务。
 
-## 浏览器和控制器模式
+## 浏览器和 CCI 续期控制器
 
 slaigpus 维护两个互相独立的持久 Chrome profile：
 
 - work profile：供 `viewer` 的可见工作 Chrome 使用；
-- automation profile：供 `controller`、CCI 和 ACP 后台 API 使用。
+- automation profile：供 CCI 续期控制器、CCI 命令和 ACP 后台 API 使用。
 
 两个 profile 不共享 Cookie，也不会互相复制登录态，因此可以在同一台机器上并存而不争抢 profile 锁。
 
@@ -311,7 +293,7 @@ slaigpus 维护两个互相独立的持久 Chrome profile：
 slaigpus viewer
 ```
 
-`viewer` 使用配置的网络路径并打开可见 Chrome。直连时不启动 SSH 且显式禁用 Chrome 系统代理；SSH 模式下自动建立 SOCKS。若配置了凭据，它先用 work profile 启动短暂、可见且禁用扩展的登录 bootstrap；确认到达 Console 后关闭 bootstrap，再启动普通工作窗口。
+`viewer` 使用配置的直连或 SSH 代理打开可见 Chrome。若配置了凭据，它先用 work profile 启动短暂、可见且禁用扩展的登录 bootstrap；确认到达 Console 后关闭 bootstrap，再启动普通工作窗口。
 
 遇到验证码、MFA、未知页面或自动登录失败时，不会反复提交账号密码，而是保留可见窗口供人工处理。
 
@@ -323,7 +305,7 @@ slaigpus viewer --cdp
 
 这会启用配置的 loopback DevTools 端口，默认 `127.0.0.1:9222`。不要把该端口转发给其他机器。
 
-### 后台控制器
+### CCI 续期控制器
 
 ```bash
 slaigpus controller
@@ -332,11 +314,23 @@ slaigpus controller
 slaigpus controller --cci 'CCI_NAME_OR_DISPLAY_NAME'
 ```
 
-`controller` 根据 `[sensecore.network]` 直连或通过配置的 SSH `Host` 别名启动 headless automation Chrome，自动登录并持续管理 CCI。`--cci` 对 API 的内部 `name` 和控制台显示的 `display_name` 做精确匹配；也可用 `--direct` / `--ssh-host ALIAS` 临时覆盖网络。它不会在登录失败时弹出人工窗口；错误密码、验证码、MFA 或未知登录页会使其失败闭合并退出。
+本文把该进程统一称为“CCI 续期控制器”；为保持命令兼容，CLI 子命令仍叫 `controller`。
 
-运行 controller 的机器必须在目标 CCI 重启期间保持在线。如果 controller 本身运行在每 4 小时销毁的目标 CCI 内，它无法在自身重启期间完成镜像核对与恢复，应改放到不会随目标 CCI 一起销毁的机器上。
+`slaigpus controller` 是专门负责 CCI 续期的常驻进程，不是普通网页浏览器，也不会仅因进程正在运行就修改 CCI。直接在终端执行时它会占用前台；交给 systemd 后才作为后台服务运行。
 
-同机执行 `cci status/remaining/renew/watch` 会优先连接已有 automation Chrome。没有 controller 时，这些命令也可临时启动浏览器；加 `--headless` 可要求全程不出现可见窗口。
+启动后，CCI 续期控制器会根据 `[sensecore.network]` 直连或通过配置的 SSH `Host` 别名启动 headless automation Chrome，自动登录，然后循环执行以下工作：
+
+1. 按 `--cci` 选择目标 CCI，并从服务端 `last_started_time` 计算本轮运行时间；
+2. 默认每 30 秒检查一次状态和本地自动续期开关；
+3. 运行达到 `3h50m` 时，保存当前容器为私有镜像；
+4. 快照成功后，把 CCI 的容器镜像更新为新镜像，等待平台自动重启；
+5. 核对新实例、镜像和启动时间，成功后继续监控下一轮。
+
+`--cci` 对 API 的内部 `name` 和控制台显示的 `display_name` 做精确匹配；也可用 `--direct` / `--ssh-host ALIAS` 临时覆盖网络。关闭 `slaigpus cci auto-renew` 后，控制器仍可运行和保持登录态，但不会开始下一轮自动续期。登录失败时它不会弹出人工窗口；错误密码、验证码、MFA 或未知登录页会使其失败闭合并退出。
+
+运行 CCI 续期控制器的机器必须在目标 CCI 重启期间保持在线。如果控制器本身运行在每 4 小时销毁的目标 CCI 内，它无法在自身重启期间完成镜像核对与恢复，应改放到不会随目标 CCI 一起销毁的机器上。
+
+同机执行 `cci status/remaining/renew/watch` 会优先连接 CCI 续期控制器已有的 automation Chrome。没有运行控制器时，这些命令也可临时启动浏览器；加 `--headless` 可要求全程不出现可见窗口。
 
 ### 组合模式
 
@@ -344,25 +338,19 @@ slaigpus controller --cci 'CCI_NAME_OR_DISPLAY_NAME'
 slaigpus open
 ```
 
-`open` 同时启动可见工作 Chrome 和独立的后台 CCI watcher，仍使用两个互不冲突的 profile。只想打开浏览器：
+`open` 同时启动可见工作 Chrome 和独立的后台 CCI 续期任务，仍使用两个互不冲突的 profile。只想打开浏览器：
 
 ```bash
 slaigpus open --no-cci-watch
 ```
 
-为显式配置的其他站点启用 watcher：
+## 使用 systemd 常驻运行 CCI 续期控制器
 
-```bash
-slaigpus open SITE --cci-watch
-```
-
-## 使用 systemd 常驻 controller
-
-先确认前台 `slaigpus controller` 可成功登录，再创建 `~/.config/systemd/user/slaigpus-controller.service`：
+先在终端前台运行 `slaigpus controller --cci 'CCI_NAME_OR_DISPLAY_NAME'`，确认登录、目标选择和状态查询正常，再创建 `~/.config/systemd/user/slaigpus-controller.service`：
 
 ```ini
 [Unit]
-Description=slaigpus headless SenseCore CCI controller
+Description=slaigpus CCI renewal controller
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=15min
@@ -370,8 +358,8 @@ StartLimitBurst=3
 
 [Service]
 Type=simple
-# 多个 CCI 时可改为：controller --cci CCI_NAME_OR_DISPLAY_NAME
-ExecStart=%h/.local/bin/slaigpus controller
+# 建议始终明确目标：controller --cci CCI_INTERNAL_NAME
+ExecStart=%h/.local/bin/slaigpus controller --cci CCI_INTERNAL_NAME
 UMask=0077
 Restart=on-failure
 RestartSec=60s
@@ -379,6 +367,8 @@ RestartSec=60s
 [Install]
 WantedBy=default.target
 ```
+
+把 `CCI_INTERNAL_NAME` 替换为 CCI 的实际内部名称。
 
 若 `command -v slaigpus` 不是 `%h/.local/bin/slaigpus`，请替换 `ExecStart`。仓库也提供 [examples/slaigpus-controller.service](examples/slaigpus-controller.service)。
 
@@ -389,7 +379,7 @@ systemctl --user enable --now slaigpus-controller.service
 journalctl --user -u slaigpus-controller.service -f
 ```
 
-`enable-linger` 允许服务在退出 SSH 后继续运行并随机器启动。短暂网络或 SSH 故障按 60 秒间隔恢复；15 分钟内快速失败最多三次，避免错误密码、验证码或页面变化造成无限快速重试。
+`enable-linger` 允许服务在退出 SSH 后继续运行并随机器启动。短暂网络或代理故障按 60 秒间隔恢复；15 分钟内快速失败最多三次，避免错误密码、验证码或页面变化造成无限快速重试。
 
 修复故障后：
 
@@ -437,7 +427,7 @@ slaigpus cci watch \
   --cci 'CCI_NAME_OR_DISPLAY_NAME' \
   --renew-after 3h50m
 
-# 或使用专门的后台 controller；生产使用建议交给 systemd
+# 或使用专门的 CCI 续期控制器；生产使用建议交给 systemd
 slaigpus controller \
   --cci 'CCI_NAME_OR_DISPLAY_NAME' \
   --renew-after 3h50m
@@ -460,12 +450,12 @@ slaigpus controller \
 
 | 参数 | 适用命令 | 作用 |
 |---|---|---|
-| `--direct` | controller、CCI 命令 | 临时强制直连，覆盖 TOML |
-| `--ssh-host ALIAS` | controller、CCI 命令 | 临时使用 `~/.ssh/config` 中的代理别名；与 `--direct` 互斥 |
-| `--credentials-file PATH` | controller、CCI 命令 | 临时使用指定绝对路径的私有凭据 JSON；默认使用配置助手保存的文件 |
-| `--headless` | `cci status/remaining/renew/watch` | 没有现有 controller 时，只允许无头登录；登录失败直接退出，不弹窗口 |
+| `--direct` | CCI 续期控制器、CCI 命令 | 临时强制直连，覆盖 TOML |
+| `--ssh-host ALIAS` | CCI 续期控制器、CCI 命令 | 临时使用 `~/.ssh/config` 中的代理别名；与 `--direct` 互斥 |
+| `--credentials-file PATH` | CCI 续期控制器、CCI 命令 | 临时使用指定绝对路径的私有凭据 JSON；默认使用配置助手保存的文件 |
+| `--headless` | `cci status/remaining/renew/watch` | 没有运行中的 CCI 续期控制器时，只允许无头登录；登录失败直接退出，不弹窗口 |
 | `--cdp-port PORT` | `cci status/remaining/renew/watch` | 连接已经运行的 slaigpus Chrome，不再启动临时浏览器 |
-| `--no-probe` | controller、CCI 命令 | 跳过启动前的网络连通性检查 |
+| `--no-probe` | CCI 续期控制器、CCI 命令 | 跳过启动前的网络连通性检查 |
 | `--json` | status、remaining、renew | 输出适合 agent/脚本解析的 JSON |
 
 命令专用参数：
@@ -496,7 +486,7 @@ slaigpus cci remaining --json
 
 程序按服务端 `last_started_time` 计时，不按 slaigpus 启动时间计时。
 
-所有 CCI 查询、续期和 watcher 命令都支持 `--workspace`，并可用 `--cci NAME_OR_DISPLAY_NAME`、`--instance`、`--container`、`--namespace` 消除目标歧义。`--cci` 同时接受 CCI 内部名称和页面显示名称，支持中文显示名称；旧的 `--app` 仍兼容。没有已有 controller 时，可用 `--credentials-file` 指定临时自动化浏览器的凭据；`--cdp-port` 只用于连接现有 slaigpus Chrome。
+所有 CCI 查询、续期和 watcher 命令都支持 `--workspace`，并可用 `--cci NAME_OR_DISPLAY_NAME`、`--instance`、`--container`、`--namespace` 消除目标歧义。`--cci` 同时接受 CCI 内部名称和页面显示名称，支持中文显示名称；旧的 `--app` 仍兼容。没有运行中的 CCI 续期控制器时，可用 `--credentials-file` 指定临时自动化浏览器的凭据；`--cdp-port` 只用于连接现有 slaigpus Chrome。
 
 ### 手动续期和前台 watcher
 
@@ -607,7 +597,7 @@ slaigpus cci status \
 
 ## ACP 任务
 
-ACP 命令和 CCI 管理使用同一套 SSH 跳板与 automation profile。当前 Console、ACP/AEC2 API 和认证 allowlist 只验证过 `cn-sh-01`；其他区域会在启动浏览器前被拒绝。
+ACP 命令和 CCI 管理使用同一套登录配置与 automation profile。当前 Console、ACP/AEC2 API 和认证 allowlist 只验证过 `cn-sh-01`；其他区域会在启动浏览器前被拒绝。
 
 ### 固定硬件配置库
 
@@ -619,7 +609,7 @@ slaigpus acp profiles --resource-class spot
 slaigpus acp profiles --resource-class standard --json
 ```
 
-查看配置库不需要 SSH、Chrome 或登录。
+查看配置库不需要 Chrome 或登录。
 
 默认 profile：
 
@@ -845,51 +835,9 @@ slaigpus acp logs \
 
 Monitor 查询虽然使用 HTTP POST，但只是读取日志和筛选值，不创建或修改 ACP 任务。
 
-## 网络配置和自定义站点
-
-`slaigpus configure` 默认维护 `~/.config/slaigpus/config.toml`。程序也会查找 `./slaigpus.toml`，或使用 `--config` / `SLAIGPUS_CONFIG`。
-
-```toml
-[sensecore]
-account_type = "ra"
-
-[sensecore.network]
-mode = "ssh"
-ssh_host = "sensecore-proxy"
-
-[defaults]
-site = "intranet"
-
-[sites.intranet]
-mode = "ssh"
-ssh_host = "gateway"
-url = "https://wiki.internal.example.com/"
-
-[sites.public]
-mode = "direct"
-url = "https://example.com/"
-```
-
-SenseCore 专用的 `[sensecore]` 只接受 `account_type` 和 `network`；`account_type` 只能是 `student` 或 `ra`。workspace 使用程序内置的 SLAI 固定值，不写入 TOML。`[sensecore.network]` 只接受 `mode` 和 `ssh_host`。SSH 的 `HostName`、`User`、`Port`、`IdentityFile`、`ProxyJump` 等全部属于 `~/.ssh/config`。完整注释和通用站点字段见 [config.example.toml](config.example.toml)。SenseCore 账号密码不能写入 TOML。
-
-### 隧道命令
-
-```bash
-slaigpus up intranet
-slaigpus probe intranet
-slaigpus list
-
-slaigpus run intranet -- curl -sS https://wiki.internal/api/health
-slaigpus run intranet -- python my_script.py
-```
-
-`run` 中的 `--` 是必需的。SSH 模式注入 `ALL_PROXY`、`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY`、`SLAIGPUS_SOCKS_PORT` 和 `SLAIGPUS_URL`；代理使用 `socks5h://`，域名在跳板侧解析。子进程退出码原样透传。
-
-直连模式下，`run` 清空继承的大小写代理变量、设置 `NO_PROXY=*`，并提供 `SLAIGPUS_CONNECTION=direct`。SSH 模式提供 `SLAIGPUS_CONNECTION=ssh` 和 SOCKS 变量。`up` 只适用于 SSH 模式；直连没有需要保持的隧道。
-
 ## 自动登录和安全边界
 
-自动登录只对 slaigpus 自己启动、使用受信任系统 Chrome 的内建 SenseCore 流程生效；允许该流程使用受管的直连或 SSH SOCKS 路径。网络模式不会改变可信登录域名、企业标识或 API allowlist。自定义站点、外部 `--cdp-port`、自定义 Chrome 参数/路径、`SLAIGPUS_CHROME` 和复用 SOCKS listener 不会收到凭据；显式传入凭据但不满足边界时直接拒绝。
+自动登录只对 slaigpus 自己启动、使用受信任系统 Chrome 的内建 SenseCore 流程生效。网络方式不会改变可信登录域名、企业标识或 API allowlist。外部 `--cdp-port`、自定义 Chrome 参数/路径和 `SLAIGPUS_CHROME` 不会收到凭据；显式传入凭据但不满足边界时直接拒绝。
 
 登录流程：
 
@@ -911,53 +859,7 @@ slaigpus run intranet -- python my_script.py
 
 `credentials delete` 只禁止未来自动填充，不清除 Chrome profile 中已有 Cookie；立即注销仍需在网页完成。`credentials status` 只检查安全元数据，不显示账号或密码。
 
-## Python 接口
-
-SSH 隧道是上下文管理器，正常退出、异常和 `Ctrl-C` 都会回收：
-
-```python
-from slaigpus import SSHTunnel
-
-with SSHTunnel("gateway") as tunnel:
-    tunnel.probe("wiki.internal", 443)
-    print(tunnel.socks_url)
-    # tunnel.env 可传给 subprocess
-    # tunnel.port 可传给浏览器或 Playwright
-```
-
-Playwright 封装会按站点配置自动选择直连或 SSH：
-
-```python
-from slaigpus.automation import SiteSession
-
-with SiteSession("intranet", headless=True) as session:
-    session.page.goto(session.site.url)
-    print(session.page.title())
-```
-
-```bash
-pip install -e '.[automation]'
-playwright install chromium
-```
-
-两种通用驱动方式：
-
-- `SiteSession` / `browser_context`：Playwright 管理浏览器，可 headless，适合定时任务；
-- `attach_over_cdp`：先运行 `slaigpus viewer SITE --cdp` 并人工登录，再由脚本接管。
-
-通用驱动共用站点的 work profile，不要同时启动两个使用同一 profile 的 Chrome。它们不使用 controller 的 automation profile。
-
-示例见 [examples/agent_playwright.py](examples/agent_playwright.py) 和 [examples/agent_attach_cdp.py](examples/agent_attach_cdp.py)。
-
 ## 设计说明
-
-**为什么 SSH 模式使用 SOCKS（`ssh -D`）而不是 `-L`。** 网页会访问多个域名、CDN 和跳转目标；单端口转发会遗漏请求并造成 TLS/Host 不匹配。能直连时不会启动 SSH。
-
-**为什么自动选择端口。** `socks_port = 0` 让内核分配空闲端口，避免并行进程争抢固定 1080。
-
-**为什么启动后还要 probe。** SSH 模式下，本地端口已绑定不代表跳板已能访问目标，因此执行完整 SOCKS5 CONNECT；直连模式执行本机 DNS 和 TCP 连接检查。
-
-**为什么 SSH 模式阻止本地 DNS。** Chrome 的 host resolver 规则强制域名交给 SOCKS 侧解析；内网域名通常只有跳板侧 DNS 能识别。直连模式使用本机 DNS。
 
 **为什么 profile 持久化。** Cookie 和登录会话需要跨进程保留。不同用途使用不同 profile，防止锁冲突和权限扩大。
 
@@ -965,34 +867,9 @@ playwright install chromium
 
 ## 排错
 
-**`ssh exited with code 255`**
+**启用 SSH 代理后无法连接**
 
-只会出现在 SSH 模式。检查错误中的 SSH stderr，并用配置中的同一个别名执行：
-
-```bash
-ssh -o ControlMaster=no -o ControlPath=none \
-  -o BatchMode=yes SSH_ALIAS true
-```
-
-**`host unreachable (DNS failed on the jump host, or no route)`**
-
-隧道已建立，但跳板无法解析或访问目标。在跳板环境中测试目标域名和端口。
-
-**直连失败但浏览器手工访问正常**
-
-`direct` 会为受管 Chrome 显式设置 `--no-proxy-server`，不会继承系统 PAC/HTTP 代理。如果当前网络实际上依赖代理，应配置可访问目标的 SSH `Host` 别名并选择 SSH 模式。
-
-**Chrome 显示 `ERR_NAME_NOT_RESOLVED`**
-
-通用旧站点可设置 `block_local_dns = false`。内建 SenseCore 应保持默认值。
-
-**内网站点使用自签证书**
-
-仅对可信内网站点配置 `chrome_args = ["--ignore-certificate-errors"]`。
-
-**端口被占用**
-
-默认直接失败。确认要复用已有 listener 时才加 `--reuse`。
+确认配置的 `Host` 别名存在于当前系统账号的 `~/.ssh/config`，并且该账号可以非交互连接。
 
 **无法安全选择 CCI app、实例、容器或 namespace**
 
@@ -1025,4 +902,4 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-测试使用假的 SSH/SOCKS、浏览器和 SenseCore API，不需要真实跳板机。覆盖隧道启动与探测、登录状态机、CCI 发现/续期/恢复、ACP 固定资源与提交边界、Monitor 日志分页和 CLI 参数。
+测试使用离线替身，不会访问真实 SenseCore 环境。覆盖登录状态机、CCI 发现/续期/恢复、ACP 固定资源与提交边界、Monitor 日志分页和 CLI 参数。
