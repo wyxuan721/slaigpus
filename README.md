@@ -93,13 +93,13 @@ slaigpus open --ssh-host sensecore-proxy
 
 ### 1. 安装系统依赖
 
-slaigpus 需要 Python 3.9 或更高版本、Git 和官方 Google Chrome。
+slaigpus 需要 Python 3.9 或更高版本和官方 Google Chrome。只有开发源码安装才需要 Git。
 
 Ubuntu 22.04/24.04 amd64：
 
 ```bash
 sudo apt update
-sudo apt install -y git curl ca-certificates pipx
+sudo apt install -y curl ca-certificates pipx
 python3 --version
 pipx --version
 ```
@@ -113,7 +113,7 @@ sudo apt install -y openssh-client
 macOS：
 
 ```bash
-brew install git pipx
+brew install pipx
 python3 --version
 pipx --version
 ```
@@ -152,10 +152,11 @@ macOS 的默认受信任路径是：
 pipx ensurepath
 ```
 
-首次执行后应关闭并重新打开终端，再从 GitHub 安装：
+首次执行后应关闭并重新打开终端，再安装固定版本的 GitHub Release wheel：
 
 ```bash
-pipx install 'git+https://github.com/wyxuan721/slaigpus.git'
+pipx install \
+  https://github.com/wyxuan721/slaigpus/releases/download/v0.6.0/slaigpus-0.6.0-py3-none-any.whl
 ```
 
 不要使用 `sudo pip install`，也不要只安装到临时虚拟环境，否则容易遇到权限问题或在新终端中找不到命令。
@@ -187,10 +188,11 @@ slaigpus cci status --headless --no-probe
 
 ### 5. 更新或卸载
 
-从 GitHub 更新到最新版本：
+升级 Release 时，将 URL 中的标签和文件版本同时替换成目标版本。例如重新安装 `v0.6.0`：
 
 ```bash
-pipx upgrade slaigpus
+pipx install --force \
+  https://github.com/wyxuan721/slaigpus/releases/download/v0.6.0/slaigpus-0.6.0-py3-none-any.whl
 ```
 
 若 systemd 正在运行 CCI 续期控制器，更新后重启：
@@ -212,6 +214,8 @@ pipx uninstall slaigpus
 需要直接修改源码时可使用 editable 安装：
 
 ```bash
+# Ubuntu: sudo apt install -y git
+# macOS:  brew install git
 git clone https://github.com/wyxuan721/slaigpus.git
 cd slaigpus
 pipx install --editable .
