@@ -87,32 +87,107 @@ slaigpus open --ssh-host sensecore-proxy
 
 `--direct` 可临时覆盖配置并强制直连。
 
-## 安装与更新
+## 安装教程
 
-推荐使用 `pipx`，安装后可在任意终端运行 `slaigpus`。
+推荐使用 `pipx` 安装。它会为 slaigpus 创建独立的 Python 环境，同时把 `slaigpus` 命令加入用户 PATH，因此安装后可在任意终端使用。
 
-Ubuntu：
+### 1. 安装系统依赖
+
+slaigpus 需要 Python 3.9 或更高版本、Git 和官方 Google Chrome。
+
+Ubuntu 22.04/24.04 amd64：
 
 ```bash
 sudo apt update
-sudo apt install -y git curl ca-certificates pipx openssh-client
-pipx ensurepath
-# 重新打开终端，使 ~/.local/bin 进入 PATH
-pipx install 'git+https://github.com/wyxuan721/slaigpus.git'
-command -v slaigpus
-slaigpus --help
+sudo apt install -y git curl ca-certificates pipx
+python3 --version
+pipx --version
+```
+
+只有选择 SSH 代理时才需要安装 OpenSSH 客户端：
+
+```bash
+sudo apt install -y openssh-client
 ```
 
 macOS：
 
 ```bash
-brew install pipx
-pipx ensurepath
-pipx install 'git+https://github.com/wyxuan721/slaigpus.git'
-command -v slaigpus
+brew install git pipx
+python3 --version
+pipx --version
 ```
 
-从 GitHub 更新：
+如果 `python3 --version` 低于 `3.9`，应先升级 Python，再继续安装。
+
+### 2. 安装 Google Chrome
+
+Ubuntu amd64 安装官方系统级 Chrome：
+
+```bash
+curl -fLO https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo apt install -y ./google-chrome-stable_current_amd64.deb
+google-chrome-stable --version
+```
+
+macOS 可使用 Homebrew 安装：
+
+```bash
+brew install --cask google-chrome
+```
+
+macOS 的默认受信任路径是：
+
+```text
+/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+```
+
+无人值守自动登录只向受信任的系统级 Google Chrome 提供凭据。Snap/Flatpak Chromium、自定义 `SLAIGPUS_CHROME` 或权限异常的浏览器可以用于人工浏览，但不能用于自动填充账号密码。
+
+### 3. 安装 slaigpus
+
+先让 `pipx` 把命令目录加入 PATH：
+
+```bash
+pipx ensurepath
+```
+
+首次执行后应关闭并重新打开终端，再从 GitHub 安装：
+
+```bash
+pipx install 'git+https://github.com/wyxuan721/slaigpus.git'
+```
+
+不要使用 `sudo pip install`，也不要只安装到临时虚拟环境，否则容易遇到权限问题或在新终端中找不到命令。
+
+### 4. 验证安装并完成首次配置
+
+```bash
+command -v slaigpus
+slaigpus --help
+pipx list
+```
+
+`command -v slaigpus` 应输出一个可执行文件路径，通常是 `~/.local/bin/slaigpus`；`slaigpus --help` 应显示 `viewer`、`controller`、`cci` 和 `acp` 等命令。
+
+随后在交互式终端完成账号、身份和网络配置：
+
+```bash
+slaigpus configure
+slaigpus credentials status
+```
+
+最后执行只读检查；它会验证自动登录和 CCI 状态读取，但不会保存镜像或修改 CCI：
+
+```bash
+slaigpus cci status --headless --no-probe
+```
+
+如果提示 `slaigpus: command not found`，重新打开终端并再次执行 `pipx ensurepath`。也可以先用 `~/.local/bin/slaigpus --help` 判断是否只是 PATH 尚未刷新。
+
+### 5. 更新或卸载
+
+从 GitHub 更新到最新版本：
 
 ```bash
 pipx upgrade slaigpus
@@ -124,33 +199,23 @@ pipx upgrade slaigpus
 systemctl --user restart slaigpus-controller.service
 ```
 
-开发源码可使用 editable 安装：
+卸载程序：
+
+```bash
+pipx uninstall slaigpus
+```
+
+卸载不会自动删除本地凭据、配置、Chrome profile 或 CCI 恢复状态，避免误删仍需保留的数据。
+
+### 6. 开发源码安装（可选）
+
+需要直接修改源码时可使用 editable 安装：
 
 ```bash
 git clone https://github.com/wyxuan721/slaigpus.git
 cd slaigpus
 pipx install --editable .
 ```
-
-不要把日常命令只安装到临时 venv，否则换终端后可能找不到命令。
-
-### Chrome
-
-macOS 自动登录只信任系统级 Google Chrome：
-
-```text
-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
-```
-
-Ubuntu amd64 的无人值守自动登录要求官方系统级 Google Chrome：
-
-```bash
-curl -LO https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-sudo apt install ./google-chrome-stable_current_amd64.deb
-google-chrome-stable --version
-```
-
-Snap/Flatpak Chromium、用户可替换的 Chrome、自定义 `SLAIGPUS_CHROME` 或宽松权限的二进制可用于人工浏览，但不会收到自动登录凭据。
 
 ## 首次配置
 
