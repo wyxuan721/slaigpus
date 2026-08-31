@@ -98,7 +98,7 @@ slaigpus acp submit \
   --apply
 ```
 
-正式学生默认使用标准资源，RA 默认使用闲时资源。可通过 `--resource-class` 显式覆盖，通过 `--resource-profile` 选择固定硬件配置。
+正式学生默认使用标准资源，也可以显式选择闲时资源；RA 只能使用闲时资源，显式选择 `standard` 会在任何 ACP 请求前被拒绝。通过 `--resource-profile` 选择固定硬件配置。
 
 ## 固定环境与命令概览
 
@@ -512,10 +512,10 @@ slaigpus acp profiles --resource-class spot --json
 
 资源类别：
 
-- `standard`：标准资源，API 使用 `RESERVED`；
-- `spot`：闲时资源，API 使用 `SPOT`；
+- `standard`：标准资源，API 使用 `RESERVED`，仅正式学生可提交；
+- `spot`：闲时资源，API 使用 `SPOT`，正式学生和 RA 均可提交；
 - 不指定时，正式学生默认 `standard`，RA 默认 `spot`；
-- 显式 `--resource-class` 始终覆盖身份默认值，两类资源不会互相回退。
+- RA 显式选择 `standard` 会在启动浏览器或发送 ACP 请求前失败；资源类别不会自动回退。
 
 ### 提交参数
 

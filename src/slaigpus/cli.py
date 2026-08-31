@@ -3340,17 +3340,22 @@ def _ensure_initial_configuration(args: argparse.Namespace) -> None:
 
 
 def _apply_account_defaults(args: argparse.Namespace) -> None:
-    """Resolve defaults that depend on the configured SenseCore identity."""
+    """Resolve and enforce ACP resource access for the configured identity."""
     if not (
         getattr(args, "cmd", "") == "acp"
         and getattr(args, "acp_cmd", "") == "submit"
-        and getattr(args, "resource_class", None) is None
     ):
         return
     config = load_config(getattr(args, "config", None))
-    args.resource_class = (
-        "standard" if config.sensecore_account_type == "student" else "spot"
-    )
+    account_type = config.sensecore_account_type
+    requested_class = getattr(args, "resource_class", None)
+    if account_type == "ra" and requested_class == "standard":
+        raise ConfigError(
+            "RA accounts cannot submit standard ACP jobs; use "
+            "--resource-class spot"
+        )
+    if requested_class is None:
+        args.resource_class = "standard" if account_type == "student" else "spot"
 
 
 # ---------------------------------------------------------------- arg parsing

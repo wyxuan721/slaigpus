@@ -221,7 +221,31 @@ def test_acp_default_resource_class_follows_configured_identity(
     assert args.resource_class == expected
 
 
-def test_explicit_acp_resource_class_overrides_identity(monkeypatch):
+def test_student_can_explicitly_select_spot_resources(monkeypatch):
+    args = _parse(
+        "acp",
+        "submit",
+        "--name",
+        "job",
+        "--image",
+        "image",
+        "--command",
+        "run",
+        "--resource-class",
+        "spot",
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda _path=None: Config(sensecore_account_type="student"),
+    )
+
+    cli._apply_account_defaults(args)
+
+    assert args.resource_class == "spot"
+
+
+def test_ra_cannot_explicitly_select_standard_resources(monkeypatch):
     args = _parse(
         "acp",
         "submit",
@@ -237,12 +261,53 @@ def test_explicit_acp_resource_class_overrides_identity(monkeypatch):
     monkeypatch.setattr(
         cli,
         "load_config",
-        lambda _path=None: pytest.fail("explicit class must not load identity default"),
+        lambda _path=None: Config(sensecore_account_type="ra"),
     )
 
-    cli._apply_account_defaults(args)
+    with pytest.raises(
+        ConfigError,
+        match="RA accounts cannot submit standard ACP jobs",
+    ):
+        cli._apply_account_defaults(args)
 
-    assert args.resource_class == "standard"
+
+def test_main_rejects_ra_standard_before_acp_handler(monkeypatch, capsys):
+    handler_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_ensure_initial_configuration",
+        lambda _args: None,
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda _path=None: Config(sensecore_account_type="ra"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "cmd_acp_submit",
+        lambda _args: handler_calls.append(True) or 0,
+    )
+
+    result = cli.main(
+        [
+            "acp",
+            "submit",
+            "--name",
+            "job",
+            "--image",
+            "image",
+            "--command",
+            "run",
+            "--resource-class",
+            "standard",
+            "--apply",
+        ]
+    )
+
+    assert result == 1
+    assert handler_calls == []
+    assert "RA accounts cannot submit standard ACP jobs" in capsys.readouterr().err
 
 
 def test_noninteractive_first_use_never_waits_for_input(monkeypatch):
