@@ -2944,6 +2944,32 @@ def cmd_cci_status(args: argparse.Namespace) -> int:
     return _run_cci_command(args, show)
 
 
+def cmd_cci_start(args: argparse.Namespace) -> int:
+    def start(
+        supervisor: RenewalSupervisor,
+        stop_event: Optional[threading.Event],
+    ) -> int:
+        result = supervisor.start()
+        data = {
+            "action": result.action,
+            "status": result.status.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2))
+        elif result.action == "already_running":
+            ok(
+                f"CCI {result.status.target.app_name} is already RUNNING and ready"
+            )
+        else:
+            ok(
+                f"CCI {result.status.target.app_name} started; instance "
+                f"{result.status.target.instance_name} is RUNNING and ready"
+            )
+        return 0
+
+    return _run_cci_command(args, start)
+
+
 def cmd_cci_renew(args: argparse.Namespace) -> int:
     def renew(supervisor: RenewalSupervisor, stop_event: Optional[threading.Event]) -> int:
         result = supervisor.renew(if_due=args.if_due)
@@ -3879,6 +3905,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_cci_common(p_status)
     p_status.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     p_status.set_defaults(func=cmd_cci_status)
+
+    p_start = cci_sub.add_parser(
+        "start",
+        help="start a suspended CCI and wait until ready",
+    )
+    add_cci_common(p_start)
+    p_start.add_argument(
+        "--json",
+        action="store_true",
+        help="emit machine-readable JSON",
+    )
+    p_start.set_defaults(func=cmd_cci_start)
 
     p_renew = cci_sub.add_parser("renew", help="save an image and restart from it now")
     add_cci_common(p_renew)

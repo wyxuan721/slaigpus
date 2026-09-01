@@ -223,6 +223,33 @@ class SequenceResolver:
         return copy.deepcopy(self.targets[index])
 
 
+class StartResolver:
+    def __init__(self, app, *targets):
+        self.app = copy.deepcopy(app)
+        self.targets = list(targets)
+        self.resolve_calls = 0
+
+    def resolve_app(self):
+        return copy.deepcopy(self.app)
+
+    def resolve_replacement_instance(self, *, include_namespace=False):
+        index = min(self.resolve_calls, len(self.targets) - 1)
+        self.resolve_calls += 1
+        return copy.deepcopy(self.targets[index])
+
+
+class StartClient:
+    def __init__(self, *, error=None):
+        self.workspace = WorkspaceRef.parse(WORKSPACE)
+        self.error = error
+        self.start_calls = []
+
+    def start_app(self, app_name):
+        self.start_calls.append(app_name)
+        if self.error is not None:
+            raise self.error
+
+
 class RenewalClient:
     """Scriptable client that records the snapshot/PATCH ordering."""
 
@@ -353,6 +380,106 @@ def test_status_reports_renewal_and_hard_expiry_timestamps():
     ).to_dict()
     assert expired["expires_in_seconds"] == 0
     assert expired["expired"] is True
+
+
+def test_resolve_app_does_not_require_a_live_instance():
+    app = make_app()
+    app["state"] = "SUSPENDED"
+    client = DiscoveryClient(
+        apps=[app],
+        app_details={app["name"]: app},
+        instances={app["name"]: []},
+    )
+
+    selected = TargetResolver(client).resolve_app()
+
+    assert selected["name"] == "example-cci"
+    assert selected["state"] == "SUSPENDED"
+
+
+def test_start_suspended_app_once_and_wait_for_ready(tmp_path, monkeypatch):
+    app = make_app()
+    app["state"] = "SUSPENDED"
+    starting = make_target(
+        NOW,
+        instance=make_instance(
+            NOW,
+            state="PENDING",
+            container_state="WAITING",
+            ready=False,
+        ),
+    )
+    ready = make_target(NOW + timedelta(seconds=5))
+    resolver = StartResolver(app, starting, ready)
+    client = StartClient()
+    supervisor, clock = make_supervisor(
+        tmp_path,
+        monkeypatch,
+        resolver=resolver,
+        client=client,
+    )
+
+    result = supervisor.start()
+
+    assert result.action == "started"
+    assert result.status.target.instance_name == "example-cci-0"
+    assert client.start_calls == ["example-cci"]
+    assert clock.sleeps == [5.0]
+
+
+def test_start_running_ready_app_is_a_noop(tmp_path, monkeypatch):
+    app = make_app()
+    app["state"] = "RUNNING"
+    resolver = StartResolver(app, make_target(NOW))
+    client = StartClient()
+    supervisor, clock = make_supervisor(
+        tmp_path,
+        monkeypatch,
+        resolver=resolver,
+        client=client,
+    )
+
+    result = supervisor.start()
+
+    assert result.action == "already_running"
+    assert client.start_calls == []
+    assert clock.sleeps == []
+
+
+def test_start_rejects_transitional_state_without_post(tmp_path, monkeypatch):
+    app = make_app()
+    app["state"] = "UPDATING"
+    resolver = StartResolver(app, make_target(NOW))
+    client = StartClient()
+    supervisor, _clock = make_supervisor(
+        tmp_path,
+        monkeypatch,
+        resolver=resolver,
+        client=client,
+    )
+
+    with pytest.raises(CCIError, match="UPDATING"):
+        supervisor.start()
+
+    assert client.start_calls == []
+
+
+def test_start_post_error_is_not_replayed(tmp_path, monkeypatch):
+    app = make_app()
+    app["state"] = "SUSPENDED"
+    resolver = StartResolver(app, make_target(NOW))
+    client = StartClient(error=CCIError("start response was lost"))
+    supervisor, _clock = make_supervisor(
+        tmp_path,
+        monkeypatch,
+        resolver=resolver,
+        client=client,
+    )
+
+    with pytest.raises(CCIError, match="response was lost"):
+        supervisor.start()
+
+    assert client.start_calls == ["example-cci"]
 
 
 def test_auto_discovers_app_running_instance_container_and_namespace():
@@ -680,6 +807,20 @@ def test_mutation_401_is_never_refreshed_or_replayed(method):
     assert transport.refresh_calls == []
     assert [call["method"] for call in transport.calls] == [method]
     assert len(transport.responses) == 1
+
+
+def test_start_app_uses_official_action_endpoint_without_a_body():
+    transport = RecordingTransport({})
+    client = SenseCoreClient(transport, WORKSPACE)
+
+    client.start_app("example cci")
+
+    assert len(transport.calls) == 1
+    request = transport.calls[0]
+    assert request["method"] == "POST"
+    assert request["url"].endswith("/apps/example%20cci:start")
+    assert request["json_body"] is None
+    assert request["headers"] == {"x-ui-valid": "x-ui-valid"}
 
 
 def test_app_detail_instances_snapshots_and_patch_stay_on_apps_resource():
@@ -1607,6 +1748,72 @@ def test_auto_renew_control_is_per_workspace_and_rejects_corrupt_state(tmp_path)
     second.path.chmod(0o600)
     with pytest.raises(CCIError, match="boolean enabled"):
         second.status()
+
+
+def test_watch_auto_starts_suspended_app_when_auto_renew_is_enabled():
+    reports = []
+    starts = []
+
+    class StopAfterOneWait:
+        stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _seconds):
+            self.stopped = True
+            return True
+
+    supervisor = object.__new__(RenewalSupervisor)
+    supervisor.poll_interval = 5.0
+    supervisor.status = lambda **_kwargs: (_ for _ in ()).throw(
+        TargetAmbiguous("Candidates: (none)")
+    )
+    suspended = make_app()
+    suspended["state"] = "SUSPENDED"
+    supervisor.resolver = SimpleNamespace(resolve_app=lambda: suspended)
+    supervisor.store = SimpleNamespace(load=lambda: {})
+    supervisor.start = lambda: starts.append(True) or SimpleNamespace(
+        status=SimpleNamespace(target=SimpleNamespace(app_name="example-cci"))
+    )
+    supervisor._report = reports.append
+    supervisor._sleep = pytest.fail
+
+    supervisor.watch(stop_event=StopAfterOneWait(), enabled=True)
+
+    assert starts == [True]
+    assert any("started and ready" in message for message in reports)
+
+
+def test_watch_does_not_start_suspended_app_when_auto_renew_is_disabled():
+    reports = []
+
+    class StopAfterOneWait:
+        stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _seconds):
+            self.stopped = True
+            return True
+
+    supervisor = object.__new__(RenewalSupervisor)
+    supervisor.poll_interval = 5.0
+    supervisor.status = lambda **_kwargs: (_ for _ in ()).throw(
+        TargetAmbiguous("Candidates: (none)")
+    )
+    suspended = make_app()
+    suspended["state"] = "SUSPENDED"
+    supervisor.resolver = SimpleNamespace(resolve_app=lambda: suspended)
+    supervisor.store = SimpleNamespace(load=lambda: {})
+    supervisor.start = pytest.fail
+    supervisor._report = reports.append
+    supervisor._sleep = pytest.fail
+
+    supervisor.watch(stop_event=StopAfterOneWait(), enabled=False)
+
+    assert any("auto-renew is disabled" in message for message in reports)
 
 
 def test_watch_retries_pending_renewal_even_when_restarted_instance_is_young():

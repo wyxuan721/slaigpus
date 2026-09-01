@@ -323,6 +323,7 @@ def test_explicit_cci_watch_switch_overrides_site_default(argv, site, expected):
     ("argv", "handler", "extra_name", "extra_value"),
     [
         (("cci", "status", "--json"), cli.cmd_cci_status, "json", True),
+        (("cci", "start", "--json"), cli.cmd_cci_start, "json", True),
         (("cci", "renew", "--if-due"), cli.cmd_cci_renew, "if_due", True),
         (("cci", "remaining", "--json"), cli.cmd_cci_remaining, "json", True),
         (("cci", "watch", "--once"), cli.cmd_cci_watch, "once", True),
@@ -422,6 +423,27 @@ def test_cmd_cci_renew_reports_external_image_change(monkeypatch):
         "an external/manual container image change was detected; "
         "the stale renewal was discarded and no PATCH was sent"
     ]
+
+
+def test_cmd_cci_start_json_reports_action_and_ready_status(monkeypatch, capsys):
+    status_data = {"app": "trainer", "state": "RUNNING"}
+    result = SimpleNamespace(
+        action="started",
+        status=SimpleNamespace(to_dict=lambda: status_data),
+    )
+    supervisor = SimpleNamespace(start=lambda: result)
+    monkeypatch.setattr(
+        cli,
+        "_run_cci_command",
+        lambda _args, operation: operation(supervisor, None),
+    )
+
+    assert cli.cmd_cci_start(_parse("cci", "start", "--json")) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "action": "started",
+        "status": status_data,
+    }
 
 
 def test_cmd_cci_renew_json_is_structured_and_suppresses_human_message(

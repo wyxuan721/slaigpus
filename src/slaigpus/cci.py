@@ -613,6 +613,10 @@ class SenseCoreClient:
             raise CCIError(f"invalid app response for {app_name}")
         return data
 
+    def start_app(self, app_name: str) -> None:
+        """Start one suspended app using SenseCore's app action endpoint."""
+        self._request("POST", self._app_url(app_name, ":start"))
+
     def list_instances(self, app_name: str) -> List[dict]:
         data = self._request(
             "GET",
@@ -969,17 +973,8 @@ class TargetResolver:
         self.namespace_selector = namespace
         self.hints = [hint for hint in hints if hint]
 
-    def resolve(
-        self,
-        *,
-        include_namespace: bool = False,
-        _instance_selector: Optional[str] = None,
-    ) -> CCITarget:
-        instance_selector = (
-            self.instance_selector
-            if _instance_selector is None
-            else str(_instance_selector)
-        )
+    def resolve_app(self) -> dict:
+        """Resolve the selected app without requiring a live instance."""
         apps = self.client.list_apps()
         if not apps:
             raise CCIError("no CCI apps found in the configured workspace")
@@ -1004,7 +999,20 @@ class TargetResolver:
                 )
             app_summary = winners[0]
 
-        app = self.client.get_app(_app_name(app_summary))
+        return self.client.get_app(_app_name(app_summary))
+
+    def resolve(
+        self,
+        *,
+        include_namespace: bool = False,
+        _instance_selector: Optional[str] = None,
+    ) -> CCITarget:
+        instance_selector = (
+            self.instance_selector
+            if _instance_selector is None
+            else str(_instance_selector)
+        )
+        app = self.resolve_app()
         instances = self.client.list_instances(_app_name(app))
         if instance_selector:
             instance = _select_explicit(
@@ -1283,6 +1291,12 @@ class RenewalResult:
     image_uri: str = ""
 
 
+@dataclass
+class StartResult:
+    action: str
+    status: CCIStatus
+
+
 class RenewalSupervisor:
     """Poll CCI age and execute snapshot -> success -> PATCH -> ready."""
 
@@ -1343,6 +1357,16 @@ class RenewalSupervisor:
             return bool(status())
         raise CCIError("auto-renew control must be a callback or expose status()")
 
+    def _suspended_app_name(self) -> str:
+        """Return the selected app name only when it is explicitly suspended."""
+        resolve_app = getattr(self.resolver, "resolve_app", None)
+        if not callable(resolve_app):
+            return ""
+        app = resolve_app()
+        if str(app.get("state") or "").upper() != "SUSPENDED":
+            return ""
+        return _app_name(app)
+
     def status(
         self,
         *,
@@ -1360,6 +1384,58 @@ class RenewalSupervisor:
             target = self.resolver.resolve(include_namespace=include_namespace)
         started = parse_timestamp(target.instance.get("last_started_time"))
         return CCIStatus(target, started, self._now().astimezone(timezone.utc), self.renew_after)
+
+    def start(self) -> StartResult:
+        """Start a suspended app once and wait for its main container."""
+        with self.store.lock():
+            app = self.resolver.resolve_app()
+            app_name = _app_name(app)
+            state = str(app.get("state") or "UNKNOWN").upper()
+            if state == "RUNNING":
+                action = "already_running"
+            elif state == "SUSPENDED":
+                self._report(f"starting suspended CCI {app_name}")
+                self.client.start_app(app_name)
+                action = "started"
+            else:
+                raise CCIError(
+                    f"CCI {app_name} is {state}; start is allowed only from "
+                    "SUSPENDED (RUNNING is treated as a no-op)"
+                )
+            return StartResult(action, self._wait_for_running_ready(app_name, action))
+
+    def _wait_for_running_ready(self, app_name: str, action: str) -> CCIStatus:
+        deadline = time.monotonic() + self.wait_timeout
+        last_error = ""
+        while True:
+            try:
+                status = self.status(
+                    include_namespace=False,
+                    allow_replacement_instance=True,
+                )
+                if (
+                    status.target.app_name == app_name
+                    and _target_is_running_ready(
+                        status.target,
+                        status.target.container_name,
+                    )
+                ):
+                    return status
+                last_error = "the selected instance or container is not RUNNING and ready"
+            except Exception as exc:
+                if self._transport_is_broken() or self._transport_login_required():
+                    raise
+                last_error = str(exc)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self._sleep(min(self.poll_interval, max(0.1, remaining)))
+        suffix = f" Last check: {last_error}" if last_error else ""
+        verb = "was requested" if action == "started" else "was already RUNNING"
+        raise CCIError(
+            f"CCI start {verb}, but a RUNNING and ready container was not observed "
+            f"within {format_duration(self.wait_timeout)}.{suffix}"
+        )
 
     def renew(self, *, if_due: bool = False) -> RenewalResult:
         with self.store.lock():
@@ -1771,13 +1847,57 @@ class RenewalSupervisor:
         while stop_event is None or not stop_event.is_set():
             try:
                 status = self.status(include_namespace=False)
-            except TargetAmbiguous:
-                raise
             except Exception as exc:
                 # Authentication, the network path, and the CCI instance can all
                 # be briefly unavailable during a restart.  A watcher should
                 # stay alive and let cmd_open repair the tunnel.
                 if self._transport_is_broken() or self._transport_login_required():
+                    raise
+                try:
+                    suspended_app = self._suspended_app_name()
+                except TargetAmbiguous:
+                    raise
+                except Exception:
+                    suspended_app = ""
+                if suspended_app:
+                    renewal_pending = bool(self.store.load())
+                    start_enabled = (
+                        True
+                        if renewal_pending
+                        else self._auto_renew_enabled(enabled)
+                    )
+                    if start_enabled:
+                        try:
+                            result = self.start()
+                        except Exception as start_exc:
+                            if (
+                                self._transport_is_broken()
+                                or self._transport_login_required()
+                            ):
+                                raise
+                            message = (
+                                "CCI is SUSPENDED; automatic start paused and will "
+                                f"retry safely: {start_exc}"
+                            )
+                        else:
+                            message = (
+                                f"CCI {result.status.target.app_name} started and ready; "
+                                "automatic renewal monitoring resumed"
+                            )
+                    else:
+                        message = (
+                            f"CCI {suspended_app} is SUSPENDED; auto-renew is disabled, "
+                            "so it was not started"
+                        )
+                    if message != last_error:
+                        self._report(message)
+                        last_error = message
+                    if stop_event is not None:
+                        stop_event.wait(self.poll_interval)
+                    else:
+                        self._sleep(self.poll_interval)
+                    continue
+                if isinstance(exc, TargetAmbiguous):
                     raise
                 message = str(exc)
                 if message != last_error:

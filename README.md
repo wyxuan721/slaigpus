@@ -60,7 +60,7 @@ slaigpus cci auto-renew on
 slaigpus controller --cci 'CCI_NAME_OR_DISPLAY_NAME'
 ```
 
-控制器会常驻前台，每 30 秒检查一次。目标 CCI 本轮运行达到 `3h50m` 后，控制器保存当前容器镜像、切换到新镜像并等待平台重启。长期运行建议配置为 [systemd 用户服务](#使用-systemd-常驻运行)。
+控制器会常驻前台，每 30 秒检查一次。目标 CCI 为 `SUSPENDED` 且自动续期开启时，控制器会先启动应用并等待容器 ready；本轮运行达到 `3h50m` 后，再保存当前容器镜像、切换到新镜像并等待平台重启。长期运行建议配置为 [systemd 用户服务](#使用-systemd-常驻运行)。
 
 常用操作：
 
@@ -71,6 +71,9 @@ slaigpus cci remaining --cci 'CCI_NAME_OR_DISPLAY_NAME'
 
 # 立即主动续期一次
 slaigpus cci renew --cci 'CCI_NAME_OR_DISPLAY_NAME'
+
+# 显式启动已暂停的 CCI
+slaigpus cci start --cci 'CCI_NAME_OR_DISPLAY_NAME'
 
 # 暂停或恢复后续自动续期
 slaigpus cci auto-renew off
@@ -123,6 +126,7 @@ slaigpus acp submit \
 | `slaigpus open` | 同时启动可见 Chrome 和独立的 CCI 续期任务 |
 | `slaigpus credentials set/status/delete` | 管理自动登录凭据 |
 | `slaigpus cci status` | 查询 CCI、实例、容器和运行时间 |
+| `slaigpus cci start` | 启动 SUSPENDED CCI 并等待容器 ready |
 | `slaigpus cci remaining` | 查询距离续期点和强制过期还有多久 |
 | `slaigpus cci renew` | 保存镜像、切换镜像并等待重启 |
 | `slaigpus cci auto-renew on/off/status` | 持久开关或查询自动续期 |
@@ -392,6 +396,9 @@ systemctl --user restart slaigpus-controller.service
 slaigpus cci status --cci CCI_NAME_OR_DISPLAY_NAME
 slaigpus cci remaining --cci CCI_NAME_OR_DISPLAY_NAME
 
+# 启动已暂停的 CCI，并等待实例和主容器 ready
+slaigpus cci start --cci CCI_NAME_OR_DISPLAY_NAME
+
 # 立即续期，或仅在达到 3h50m 后续期
 slaigpus cci renew --cci CCI_NAME_OR_DISPLAY_NAME
 slaigpus cci renew --cci CCI_NAME_OR_DISPLAY_NAME --if-due
@@ -408,13 +415,14 @@ slaigpus cci auto-renew on
 
 `status` 返回 app、实例、容器、服务端启动时间、运行时长和续期时间；`remaining` 重点返回距离 `3h50m` 续期点和 `4h` 强制过期的剩余时间。程序按服务端 `last_started_time` 计时，而不是按 slaigpus 启动时间计时。
 
-显式执行 `cci renew` 代表人工授权，不受自动续期开关影响。`renew` 本身就是写操作，不需要额外传 `--apply`。
+显式执行 `cci start` 或 `cci renew` 代表人工授权，不受自动续期开关影响；两者都是写操作，不需要额外传 `--apply`。`cci start` 对已经 `RUNNING` 且 ready 的目标是 no-op。自动续期开启时，watcher 也会自动启动明确处于 `SUSPENDED` 的应用；开关关闭时不会自动启动。
 
 推荐给 agent 的机器可读命令：
 
 ```bash
 slaigpus cci remaining --cci CCI_NAME_OR_DISPLAY_NAME --json
 slaigpus cci auto-renew status --json
+slaigpus cci start --cci CCI_NAME_OR_DISPLAY_NAME --json
 slaigpus cci renew --cci CCI_NAME_OR_DISPLAY_NAME --if-due --json
 ```
 
