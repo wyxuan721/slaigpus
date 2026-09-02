@@ -56,6 +56,9 @@ def test_cci_browser_transport_allowlists_namespace_capacity_api(monkeypatch):
     assert "https://ccr.cn-sh-01.sensecoreapi.cn" in captured[
         "allowed_request_prefixes"
     ]
+    assert "https://network.cn-sh-01.sensecoreapi.cn" in captured[
+        "allowed_request_prefixes"
+    ]
 
 
 def test_bare_open_resolves_builtin_site_without_config(monkeypatch):
@@ -523,9 +526,14 @@ def test_cmd_cci_status_human_output_includes_hard_expiry(monkeypatch, capsys):
         "age_seconds": 3 * 3600,
         "due_in_seconds": 40 * 60,
         "expires_in_seconds": 3600,
+        "dnat_rules": [
+            {"endpoint": "180.184.249.129:10244→22(tcp)"},
+        ],
     }
+    status_calls = []
     supervisor = SimpleNamespace(
-        status=lambda **_kwargs: SimpleNamespace(to_dict=lambda: data)
+        status=lambda **kwargs: status_calls.append(kwargs)
+        or SimpleNamespace(to_dict=lambda: data)
     )
     monkeypatch.setattr(
         cli,
@@ -536,8 +544,10 @@ def test_cmd_cci_status_human_output_includes_hard_expiry(monkeypatch, capsys):
     assert cli.cmd_cci_status(_parse("cci", "status")) == 0
 
     output = capsys.readouterr().out
+    assert "dnat:         180.184.249.129:10244→22(tcp)" in output
     assert "renew in:     40m" in output
     assert "expires in:   1h" in output
+    assert status_calls == [{"include_namespace": True, "include_dnat": True}]
 
 
 @pytest.mark.parametrize(

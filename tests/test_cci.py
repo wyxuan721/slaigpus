@@ -26,6 +26,7 @@ from slaigpus.cci import (  # noqa: E402
     CCIError,
     CCIStatus,
     CCITarget,
+    DNATRule,
     AutoRenewControlStore,
     LockBusy,
     RenewalStateStore,
@@ -338,6 +339,7 @@ def test_workspace_ref_and_duration_parsing():
     assert ref.region == "cn-sh-01"
     assert ref.api_base == "https://cci.cn-sh-01.sensecore.cn/compute/cci/data/v2"
     assert ref.ccr_base == "https://ccr.cn-sh-01.sensecoreapi.cn"
+    assert ref.network_base == "https://network.cn-sh-01.sensecoreapi.cn"
     assert ref.apps_path.endswith("/workspaces/example-workspace/apps")
     assert ref.owned_apps_path.endswith("/workspaces/example-workspace/appsOwn")
 
@@ -753,6 +755,156 @@ def test_list_apps_uses_owned_collection_and_parses_apps():
     assert request["params"] == {"page_size": 500, "page_token": 1}
     assert request["json_body"] is None
     assert request["headers"] == {"x-ui-valid": "x-ui-valid"}
+
+
+def test_list_app_dnat_rules_filters_shared_vpc_by_application_uid():
+    app = make_app()
+    app.update(
+        {
+            "uid": "app-uid",
+            "resource_pool": {"vpc_id": "target-vpc"},
+        }
+    )
+    transport = RecordingTransport(
+        {
+            "resources": [
+                {
+                    "name": "eip-shared",
+                    "zone": "cn-sh-01e",
+                    "properties": json.dumps({"vpc_id": "target-vpc"}),
+                },
+                {
+                    "name": "eip-other-vpc",
+                    "zone": "cn-sh-01a",
+                    "properties": json.dumps({"vpc_id": "other-vpc"}),
+                },
+            ]
+        },
+        {
+            "dnat_rules": [
+                {
+                    "name": "ssh-new",
+                    "state": "ACTIVE",
+                    "properties": {
+                        "external_ip": "180.184.249.129",
+                        "external_port": "10244",
+                        "internal_port": "22",
+                        "protocol": "TCP",
+                        "internal_instance_name": "app-uid",
+                    },
+                },
+                {
+                    "name": "someone-else",
+                    "state": "ACTIVE",
+                    "properties": {
+                        "external_ip": "180.184.249.129",
+                        "external_port": "10245",
+                        "internal_port": "22",
+                        "protocol": "tcp",
+                        "internal_instance_name": "other-app-uid",
+                    },
+                },
+                {
+                    "name": "inactive",
+                    "state": "DELETING",
+                    "properties": {
+                        "external_ip": "180.184.249.129",
+                        "external_port": "10246",
+                        "internal_port": "22",
+                        "protocol": "tcp",
+                        "internal_instance_name": "app-uid",
+                    },
+                },
+            ],
+            "next_page_token": "page-2",
+        },
+        {
+            "dnat_rules": [
+                {
+                    "name": "web",
+                    "state": "ACTIVE",
+                    "properties": {
+                        "external_ip": "180.184.249.128",
+                        "external_port": "10443",
+                        "internal_port": "443",
+                        "protocol": "tcp",
+                        "internal_instance_name": "app-uid",
+                    },
+                }
+            ],
+            "next_page_token": "0",
+        },
+    )
+    client = SenseCoreClient(transport, WORKSPACE)
+
+    rules = client.list_app_dnat_rules(app)
+
+    assert [rule.endpoint for rule in rules] == [
+        "180.184.249.128:10443→443(tcp)",
+        "180.184.249.129:10244→22(tcp)",
+    ]
+    assert rules[1].to_dict() == {
+        "name": "ssh-new",
+        "eip": "eip-shared",
+        "external_ip": "180.184.249.129",
+        "external_port": "10244",
+        "internal_port": "22",
+        "protocol": "tcp",
+        "endpoint": "180.184.249.129:10244→22(tcp)",
+    }
+    assert len(transport.calls) == 3
+    assert transport.calls[0]["url"] == client.workspace.management_base + "/resources"
+    assert transport.calls[1]["url"] == (
+        "https://network.cn-sh-01.sensecoreapi.cn/network/eip/data/v1/"
+        "subscriptions/example-subscription/resourceGroups/default/zones/"
+        "cn-sh-01e/eips/eip-shared/dnatRules"
+    )
+    assert transport.calls[1]["params"] == {"page_size": 500}
+    assert transport.calls[1]["headers"] == {}
+    assert transport.calls[2]["params"] == {
+        "page_size": 500,
+        "page_token": "page-2",
+    }
+
+
+def test_status_queries_dnat_only_when_explicitly_requested(tmp_path):
+    target = make_target(NOW)
+    rule = DNATRule(
+        name="ssh",
+        eip="eip-shared",
+        external_ip="180.184.249.129",
+        external_port="10244",
+        internal_port="22",
+        protocol="tcp",
+    )
+
+    class Client:
+        workspace = WorkspaceRef.parse(WORKSPACE)
+
+        def __init__(self):
+            self.calls = []
+
+        def list_app_dnat_rules(self, app):
+            self.calls.append(app)
+            return [rule]
+
+    client = Client()
+    resolver = SimpleNamespace(
+        resolve=lambda **_kwargs: target,
+    )
+    supervisor = RenewalSupervisor(
+        client,
+        resolver,
+        state_root=tmp_path,
+        now=lambda: NOW,
+    )
+
+    assert "dnat_rules" not in supervisor.status().to_dict()
+    assert client.calls == []
+    assert supervisor.status(include_dnat=True).to_dict()["dnat_rules"] == [
+        rule.to_dict()
+    ]
+    assert client.calls == [target.app]
 
 
 def test_namespace_info_uses_exact_ccr_console_endpoint_and_byte_fields():

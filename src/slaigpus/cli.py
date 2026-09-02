@@ -341,6 +341,7 @@ def _make_browser_transport(
             workspace.api_base,
             workspace.management_base,
             workspace.ccr_base,
+            workspace.network_base,
         ],
         auth_capture_base=SENSECORE_IAM_AUTH_CAPTURE_URL,
         auth_capture_exact_path=True,
@@ -2925,7 +2926,7 @@ def cmd_acp_logs(args: argparse.Namespace) -> int:
 
 def cmd_cci_status(args: argparse.Namespace) -> int:
     def show(supervisor: RenewalSupervisor, stop_event: Optional[threading.Event]) -> int:
-        status = supervisor.status(include_namespace=True)
+        status = supervisor.status(include_namespace=True, include_dnat=True)
         data = status.to_dict()
         if args.json:
             print(json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2))
@@ -2935,6 +2936,13 @@ def cmd_cci_status(args: argparse.Namespace) -> int:
             print(f"container:    {data['container']}")
             print(f"namespace:    {data['namespace'] or '-'}")
             print(f"image:        {data['image_path'] or '-'}")
+            rules = data.get("dnat_rules") or []
+            if rules:
+                for index, rule in enumerate(rules):
+                    label = "dnat:         " if index == 0 else "              "
+                    print(f"{label}{rule['endpoint']}")
+            else:
+                print("dnat:         -")
             print(f"started:      {data['last_started_time']}")
             print(f"running:      {format_duration(data['age_seconds'])}")
             print(f"renew in:     {format_duration(max(0, data['due_in_seconds']))}")

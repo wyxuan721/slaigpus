@@ -441,6 +441,10 @@ class WorkspaceRef:
         return f"https://ccr.{self.region}.sensecoreapi.cn"
 
     @property
+    def network_base(self) -> str:
+        return f"https://network.{self.region}.sensecoreapi.cn"
+
+    @property
     def apps_path(self) -> str:
         encoded = "/".join(
             quote(v, safe="")
@@ -518,6 +522,34 @@ def format_duration(seconds: float) -> str:
     if minutes:
         return f"{minutes}m{secs:02d}s"
     return f"{secs}s"
+
+
+@dataclass(frozen=True)
+class DNATRule:
+    name: str
+    eip: str
+    external_ip: str
+    external_port: str
+    internal_port: str
+    protocol: str
+
+    @property
+    def endpoint(self) -> str:
+        return (
+            f"{self.external_ip}:{self.external_port}"
+            f"→{self.internal_port}({self.protocol})"
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "eip": self.eip,
+            "external_ip": self.external_ip,
+            "external_port": self.external_port,
+            "internal_port": self.internal_port,
+            "protocol": self.protocol,
+            "endpoint": self.endpoint,
+        }
 
 
 class SenseCoreClient:
@@ -693,6 +725,129 @@ class SenseCoreClient:
             },
         )
         return list((data or {}).get("resources") or [])
+
+    def _eip_url(self, zone: str, eip_name: str, suffix: str) -> str:
+        components = (
+            "network",
+            "eip",
+            "data",
+            "v1",
+            "subscriptions",
+            self.workspace.subscription,
+            "resourceGroups",
+            self.workspace.resource_group,
+            "zones",
+            zone,
+            "eips",
+            eip_name,
+        )
+        path = "/".join(quote(component, safe="") for component in components)
+        return self.workspace.network_base + "/" + path + suffix
+
+    def _list_eip_dnat_rules(self, zone: str, eip_name: str) -> List[dict]:
+        rules: List[dict] = []
+        page_token = ""
+        seen_tokens = set()
+        while True:
+            params: Dict[str, Any] = {"page_size": 500}
+            if page_token:
+                params["page_token"] = page_token
+            data = self._request(
+                "GET",
+                self._eip_url(zone, eip_name, "/dnatRules"),
+                params=params,
+            )
+            rules.extend(
+                rule
+                for rule in list((data or {}).get("dnat_rules") or [])
+                if isinstance(rule, dict)
+            )
+            next_token = str((data or {}).get("next_page_token") or "")
+            if not next_token or next_token == "0":
+                return rules
+            if next_token in seen_tokens:
+                raise CCIError(
+                    f"DNAT pagination repeated token for EIP {eip_name!r}"
+                )
+            seen_tokens.add(next_token)
+            page_token = next_token
+
+    def list_app_dnat_rules(self, app: Mapping[str, Any]) -> List[DNATRule]:
+        """Return active DNAT rules bound to one CCI application UID."""
+        app_uid = str(app.get("uid") or "").strip()
+        vpc_id = str(_nested(dict(app), "resource_pool.vpc_id") or "").strip()
+        if not app_uid or not vpc_id:
+            return []
+
+        data = self._request(
+            "GET",
+            self.workspace.management_base + "/resources",
+            params={
+                "filter": (
+                    'state="ACTIVE" AND '
+                    'resource_type="network.eip.v1.eip"'
+                )
+            },
+        )
+        result: List[DNATRule] = []
+        for eip in list((data or {}).get("resources") or []):
+            if not isinstance(eip, Mapping):
+                continue
+            properties: Any = eip.get("properties")
+            if isinstance(properties, str):
+                try:
+                    properties = json.loads(properties)
+                except ValueError:
+                    continue
+            if not isinstance(properties, Mapping):
+                continue
+            if str(properties.get("vpc_id") or "") != vpc_id:
+                continue
+            eip_name = str(eip.get("name") or "").strip()
+            zone = str(eip.get("zone") or "").strip()
+            if not eip_name or not zone:
+                continue
+            for rule in self._list_eip_dnat_rules(zone, eip_name):
+                rule_properties = rule.get("properties")
+                if not isinstance(rule_properties, Mapping):
+                    continue
+                if str(rule.get("state") or "").upper() != "ACTIVE":
+                    continue
+                if (
+                    str(rule_properties.get("internal_instance_name") or "")
+                    != app_uid
+                ):
+                    continue
+                external_ip = str(rule_properties.get("external_ip") or "").strip()
+                external_port = str(
+                    rule_properties.get("external_port") or ""
+                ).strip()
+                internal_port = str(
+                    rule_properties.get("internal_port") or ""
+                ).strip()
+                protocol = str(rule_properties.get("protocol") or "").strip().lower()
+                if not all((external_ip, external_port, internal_port, protocol)):
+                    continue
+                result.append(
+                    DNATRule(
+                        name=str(rule.get("name") or ""),
+                        eip=eip_name,
+                        external_ip=external_ip,
+                        external_port=external_port,
+                        internal_port=internal_port,
+                        protocol=protocol,
+                    )
+                )
+        return sorted(
+            result,
+            key=lambda rule: (
+                rule.external_ip,
+                rule.external_port,
+                rule.internal_port,
+                rule.protocol,
+                rule.name,
+            ),
+        )
 
     def get_namespace_info(self, namespace: str) -> dict:
         name = str(namespace).strip()
@@ -877,6 +1032,7 @@ class CCIStatus:
     started_at: datetime
     checked_at: datetime
     renew_after: float
+    dnat_rules: Optional[List[DNATRule]] = None
 
     @property
     def age(self) -> float:
@@ -907,7 +1063,7 @@ class CCIStatus:
         return self.checked_at >= self.expires_at
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "app": self.target.app_name,
             "instance": self.target.instance_name,
             "container": self.target.container_name,
@@ -925,6 +1081,9 @@ class CCIStatus:
             "expires_in_seconds": int(self.expires_in),
             "expired": self.expired,
         }
+        if self.dnat_rules is not None:
+            result["dnat_rules"] = [rule.to_dict() for rule in self.dnat_rules]
+        return result
 
 
 def _target_is_running_ready(target: CCITarget, container_name: str) -> bool:
@@ -1371,6 +1530,7 @@ class RenewalSupervisor:
         self,
         *,
         include_namespace: bool = False,
+        include_dnat: bool = False,
         allow_replacement_instance: bool = False,
     ) -> CCIStatus:
         resolve_replacement = getattr(
@@ -1383,7 +1543,16 @@ class RenewalSupervisor:
         else:
             target = self.resolver.resolve(include_namespace=include_namespace)
         started = parse_timestamp(target.instance.get("last_started_time"))
-        return CCIStatus(target, started, self._now().astimezone(timezone.utc), self.renew_after)
+        dnat_rules = (
+            self.client.list_app_dnat_rules(target.app) if include_dnat else None
+        )
+        return CCIStatus(
+            target,
+            started,
+            self._now().astimezone(timezone.utc),
+            self.renew_after,
+            dnat_rules,
+        )
 
     def start(self) -> StartResult:
         """Start a suspended app once and wait for its main container."""
