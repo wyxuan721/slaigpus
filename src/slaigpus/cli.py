@@ -67,6 +67,15 @@ from .credentials import (
     FileCredentialStore,
     SenseCoreCredentials,
 )
+from .dnat import (
+    DNATClient,
+    DNATError,
+    DNATSpec,
+    EIP_CONSOLE_URL,
+    IAM_API_ORIGIN,
+    MANAGEMENT_API_ORIGIN,
+    NETWORK_API_ORIGIN,
+)
 from .monitor import (
     ACP_CONTAINER_NAME,
     ACP_HOST_IP,
@@ -418,6 +427,31 @@ def _make_acp_transport(
         auth_requires_console_navigation=False,
         profile_dir=profile_dir,
         reuse_existing_page=reuse_existing_page,
+        discovery_timeout=30.0,
+    )
+
+
+def _make_dnat_transport(cdp_port: int) -> Any:
+    """Attach the account-routed DNAT client to an existing work viewer."""
+    try:
+        from .cdp import BrowserFetchTransport, SENSECORE_IAM_AUTH_CAPTURE_URL
+    except ModuleNotFoundError as exc:
+        raise CCIError(
+            "DNAT automation requires websocket-client; reinstall slaigpus"
+        ) from exc
+    return BrowserFetchTransport(
+        cdp_port=cdp_port,
+        console_url=EIP_CONSOLE_URL,
+        api_base=NETWORK_API_ORIGIN,
+        allowed_request_prefixes=(
+            NETWORK_API_ORIGIN,
+            MANAGEMENT_API_ORIGIN,
+            IAM_API_ORIGIN,
+        ),
+        auth_capture_base=SENSECORE_IAM_AUTH_CAPTURE_URL,
+        auth_capture_exact_path=True,
+        auth_capture_methods=("GET",),
+        auth_requires_console_navigation=False,
         discovery_timeout=30.0,
     )
 
@@ -2674,6 +2708,70 @@ def cmd_acp_submit(args: argparse.Namespace) -> int:
     return _run_acp_command(args, submit)
 
 
+def _print_dnat_result(result: Mapping[str, Any]) -> None:
+    print(f"action:       create DNAT ({'applied' if result['applied'] else 'dry-run'})")
+    print(f"EIP:          {result['eip']}")
+    print(f"display name: {result['eip_display_name']}")
+    print(f"rule:         {result['rule_name']}")
+    print(f"protocol:     {result['protocol']}")
+    print(f"EIP port:     {result['eip_port']}")
+    print(f"target:       {result['target_ip']}:{result['target_port']}")
+    if not result["applied"]:
+        print("dry-run:      no DNAT rule was created; add --apply to create it")
+
+
+def _dnat_configured_username(credentials_file: Optional[Path]) -> str:
+    store = (
+        FileCredentialStore(credentials_file)
+        if credentials_file is not None
+        else FileCredentialStore()
+    )
+    credentials = store.load()
+    if credentials is None:
+        raise DNATError(
+            "SenseCore credentials are not configured; run `slaigpus credentials set`"
+        )
+    username = credentials.username.strip()
+    credentials = None
+    return username
+
+
+def cmd_dnat_create(args: argparse.Namespace) -> int:
+    """Plan an account-routed DNAT rule, and create it only with ``--apply``."""
+
+    cdp_port = int(args.cdp_port)
+    if not _cdp_is_ready(cdp_port):
+        raise CCIError(
+            f"no slaigpus Chrome DevTools endpoint on 127.0.0.1:{cdp_port}; "
+            "start `slaigpus viewer --cdp` first"
+        )
+    username = _dnat_configured_username(args.credentials_file)
+    spec = DNATSpec(
+        protocol=args.protocol,
+        eip_port=args.eip_port,
+        target_ip=args.target_ip,
+        target_port=args.target_port,
+    )
+    transport = _make_dnat_transport(cdp_port)
+    try:
+        transport.start()
+        client = DNATClient(transport, username)
+        if args.apply:
+            result = client.create(spec).to_dict()
+        else:
+            plan = client.plan_create(spec)
+            result = plan.to_dict()
+            result["applied"] = False
+    finally:
+        transport.close()
+
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+    else:
+        _print_dnat_result(result)
+    return 0
+
+
 def _nested_nonempty_text(value: Any, path: str) -> str:
     current = value
     for component in path.split("."):
@@ -3261,15 +3359,14 @@ def _prompt_ssh_alias() -> str:
         "    User <SSH 用户名>\n"
         "    IdentityFile ~/.ssh/id_ed25519\n"
         "\n"
-        "HostName、User、端口、密钥和 ProxyJump 都由 ~/.ssh/config 管理；\n"
-        "slaigpus 只保存 Host 后面的别名。"
+        "也可以直接输入 user@host；端口、密钥和 ProxyJump 仍由 ~/.ssh/config 管理。"
     )
     while True:
-        alias = _visible_configuration_input("请输入 SSH Host 别名: ").strip()
+        alias = _visible_configuration_input("请输入 SSH Host 别名或 user@host: ").strip()
         try:
             return validate_ssh_alias(alias)
         except ConfigError as exc:
-            print(f"别名无效：{exc}")
+            print(f"SSH 目标无效：{exc}")
 
 
 def cmd_configure(args: argparse.Namespace) -> int:
@@ -3421,8 +3518,8 @@ def _add_common(parser: argparse.ArgumentParser, with_site: bool = True) -> None
     network.add_argument(
         "--ssh-host",
         default="",
-        metavar="ALIAS",
-        help="use this Host alias from ~/.ssh/config as an SSH SOCKS proxy",
+        metavar="DESTINATION",
+        help="use this Host alias or user@host as an SSH SOCKS proxy",
     )
     parser.add_argument("--url", default="", help="URL to open / probe")
     parser.add_argument("--port", type=int, default=0, help="local SOCKS port (0 = auto)")
@@ -3448,8 +3545,8 @@ def _add_sensecore_network(parser: argparse.ArgumentParser) -> None:
     network.add_argument(
         "--ssh-host",
         default="",
-        metavar="ALIAS",
-        help="override config with a Host alias from ~/.ssh/config",
+        metavar="DESTINATION",
+        help="override config with a Host alias or user@host",
     )
 
 
@@ -3544,6 +3641,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  slaigpus viewer               # visible browser only\n"
             "  slaigpus controller           # headless CCI controller\n"
             "  slaigpus credentials set --file ~/.config/slaigpus/credentials.json\n"
+            "  slaigpus dnat create --protocol tcp --eip-port 2222 "
+            "--target-ip 10.0.0.2 --target-port 22\n"
             "  slaigpus cci status           # read-only target/age check\n"
             "  slaigpus cci renew --if-due   # one safe due-only renewal\n"
         ),
@@ -3679,6 +3778,63 @@ def build_parser() -> argparse.ArgumentParser:
             "--json", action="store_true", help="emit machine-readable JSON"
         )
         command.set_defaults(func=handler)
+
+    p_dnat = sub.add_parser(
+        "dnat",
+        help="manage DNAT on the EIP selected from the configured username",
+    )
+    dnat_sub = p_dnat.add_subparsers(dest="dnat_cmd", required=True)
+    p_dnat_create = dnat_sub.add_parser(
+        "create",
+        help="plan an IP-target DNAT rule (add --apply to create it)",
+    )
+    p_dnat_create.add_argument(
+        "--protocol",
+        required=True,
+        choices=("tcp", "udp"),
+        help="DNAT protocol",
+    )
+    p_dnat_create.add_argument(
+        "--eip-port",
+        required=True,
+        metavar="PORT_OR_RANGE",
+        help="public port or range, for example 2222 or 8000-8005",
+    )
+    p_dnat_create.add_argument(
+        "--target-ip",
+        required=True,
+        help="destination IPv4 address in the EIP's VPC",
+    )
+    p_dnat_create.add_argument(
+        "--target-port",
+        required=True,
+        metavar="PORT_OR_RANGE",
+        help="destination port or range",
+    )
+    p_dnat_create.add_argument(
+        "--cdp-port",
+        type=int,
+        default=9222,
+        help="existing `slaigpus viewer --cdp` port (default: 9222)",
+    )
+    p_dnat_create.add_argument(
+        "--credentials-file",
+        type=Path,
+        default=None,
+        help=(
+            "private JSON credentials used to select the account's EIP "
+            "(default: ~/.config/slaigpus/credentials.json)"
+        ),
+    )
+    p_dnat_create.add_argument(
+        "--apply",
+        action="store_true",
+        help="create the planned rule; without this flag no rule is created",
+    )
+    p_dnat_create.add_argument(
+        "--json", action="store_true", help="emit a machine-readable plan/result"
+    )
+    p_dnat_create.set_defaults(func=cmd_dnat_create)
 
     p_acp = sub.add_parser(
         "acp",

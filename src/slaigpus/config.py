@@ -134,7 +134,7 @@ APP_SUPPORT = default_state_root()
 DEFAULT_PROFILE_ROOT = APP_SUPPORT / "profiles"
 
 # The project has one deliberately useful zero-configuration path. SenseCore
-# is reached directly unless the user explicitly selects an SSH Host alias in
+# is reached directly unless the user explicitly selects an SSH destination in
 # config.toml or on the command line.
 DEFAULT_SITE_NAME = "sensecore"
 DEFAULT_SSH_HOST = ""
@@ -225,16 +225,17 @@ class Site:
 
 
 def validate_ssh_alias(value: str) -> str:
-    """Validate one OpenSSH Host alias passed as a single argv element."""
-    alias = str(value)
-    if not alias or alias != alias.strip():
-        raise ConfigError("SSH Host alias must not be empty or padded")
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", alias) is None:
+    """Validate one safe OpenSSH alias or ``user@host`` destination."""
+    destination = str(value)
+    if not destination or destination != destination.strip():
+        raise ConfigError("SSH destination must not be empty or padded")
+    component = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+    if re.fullmatch(rf"(?:{component}@)?{component}", destination) is None:
         raise ConfigError(
-            "SSH Host alias must use only letters, digits, dot, underscore, "
-            "or hyphen, and must start with a letter or digit"
+            "SSH destination must be a Host alias or user@host using only "
+            "letters, digits, dot, underscore, or hyphen"
         )
-    return alias
+    return destination
 
 
 def default_site() -> Site:
@@ -394,7 +395,7 @@ def update_sensecore_config(
     if normalized_mode == "ssh":
         normalized_host = validate_ssh_alias(normalized_host)
     elif normalized_host:
-        raise ConfigError("direct SenseCore mode must not set an SSH Host alias")
+        raise ConfigError("direct SenseCore mode must not set an SSH destination")
 
     original = ""
     had_sensecore = False

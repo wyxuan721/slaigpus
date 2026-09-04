@@ -2,8 +2,8 @@
 # Run `slaigpus configure` to create or update the managed SenseCore settings.
 # `account_type = "student"` makes ACP default to standard resources; "ra"
 # makes ACP default to spot resources. SenseCore is direct by default. To
-# reach it through SSH, slaigpus needs only an OpenSSH Host alias; configure HostName,
-# User, Port, IdentityFile, ProxyJump, and authentication in ~/.ssh/config.
+# reach it through SSH, use an OpenSSH Host alias or a user@host destination.
+# Configure Port, IdentityFile, ProxyJump, and authentication in ~/.ssh/config.
 # SenseCore usernames/passwords are intentionally not valid TOML fields. On
 # every machine that needs automatic login, run this interactively:
 #   slaigpus configure
@@ -17,9 +17,9 @@ account_type = "student"
 [sensecore.network]
 # "direct" starts no SSH process and explicitly disables Chrome proxying.
 mode = "direct"
-# For SSH SOCKS instead, replace the line above and uncomment the alias:
+# For SSH SOCKS instead, replace the line above and set the destination:
 # mode = "ssh"
-# ssh_host = "sensecore-proxy"
+# ssh_host = "user@gateway.example.com"
 
 [defaults]
 # Used when this file is selected explicitly and no site name is given.
@@ -30,7 +30,7 @@ block_local_dns = true
 [sites.intranet]
 # Generic named sites use the same direct/SSH model.
 mode = "ssh"
-# Only an alias is needed here. Keep all concrete SSH details in ~/.ssh/config.
+# An alias or user@host is accepted. Keep other SSH details in ~/.ssh/config.
 ssh_host = "gateway"
 url = "https://wiki.internal.example.com/"
 # Only the visible work Chrome from `slaigpus viewer --cdp` uses this fixed port.

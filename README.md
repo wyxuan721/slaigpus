@@ -5,6 +5,7 @@
 - 查询 CCI 状态和剩余运行时间；
 - 在 CCI 运行满 `3h50m` 时自动执行“保存私有镜像 → 切换镜像 → 等待重启”；
 - 打开带持久登录态的可见 Chrome；
+- 按本地账号自动选择共享 EIP，并规划或创建 DNAT 规则；
 - 查询 ACP 固定硬件配置、提交任务和读取容器日志。
 
 项目要求 Python 3.9+ 和官方 Google Chrome，支持 macOS 以及 Ubuntu 22.04/24.04 amd64。
@@ -18,7 +19,7 @@
 ```bash
 pipx ensurepath
 pipx install \
-  https://github.com/wyxuan721/slaigpus/releases/download/v0.6.0/slaigpus-0.6.0-py3-none-any.whl
+  https://github.com/wyxuan721/slaigpus/releases/download/v0.7.0/slaigpus-0.7.0-py3-none-any.whl
 ```
 
 首次执行 `pipx ensurepath` 后应重新打开终端。验证命令已经进入 PATH：
@@ -131,6 +132,7 @@ slaigpus acp submit \
 | `slaigpus cci renew` | 保存镜像、切换镜像并等待重启 |
 | `slaigpus cci auto-renew on/off/status` | 持久开关或查询自动续期 |
 | `slaigpus cci watch` | 在前台等待并按时续期 |
+| `slaigpus dnat create` | 按本地账号自动选择 EIP，dry-run 或创建目的 IP DNAT 规则 |
 | `slaigpus acp profiles` | 列出固定的非 Debug ACP 硬件配置 |
 | `slaigpus acp submit` | dry-run 或提交 ACP 任务 |
 | `slaigpus acp logs` | 查询或持续读取 ACP 容器日志 |
@@ -184,14 +186,14 @@ pipx --version
 ```bash
 pipx ensurepath
 pipx install \
-  https://github.com/wyxuan721/slaigpus/releases/download/v0.6.0/slaigpus-0.6.0-py3-none-any.whl
+  https://github.com/wyxuan721/slaigpus/releases/download/v0.7.0/slaigpus-0.7.0-py3-none-any.whl
 ```
 
 强制更新或重新安装当前版本：
 
 ```bash
 pipx install --force \
-  https://github.com/wyxuan721/slaigpus/releases/download/v0.6.0/slaigpus-0.6.0-py3-none-any.whl
+  https://github.com/wyxuan721/slaigpus/releases/download/v0.7.0/slaigpus-0.7.0-py3-none-any.whl
 systemctl --user restart slaigpus-controller.service
 ```
 
@@ -238,7 +240,7 @@ SenseCore 账号: YOUR_IAM_ACCOUNT
 SenseCore 密码: YOUR_PASSWORD
 请选择身份（1=正式学生/标准资源，2=RA/闲时资源）: 2
 是否使用 SSH 代理？[y/N]: y
-请输入 SSH Host 别名: sensecore-proxy
+请输入 SSH Host 别名或 user@host: sensecore-proxy
 ```
 
 身份决定 ACP 的默认资源类别：
@@ -281,7 +283,7 @@ Host sensecore-proxy
     IdentityFile ~/.ssh/id_ed25519
 ```
 
-随后在 `slaigpus configure` 中只填写别名 `sensecore-proxy`。slaigpus 不保存 SSH 地址、用户或密钥内容。
+随后在 `slaigpus configure` 中填写别名 `sensecore-proxy`；也可以直接填写 `user@host`。端口、密钥和 `ProxyJump` 等其他 SSH 选项仍由 `~/.ssh/config` 管理。
 
 临时覆盖持久配置：
 
@@ -316,6 +318,53 @@ slaigpus viewer --cdp
 ```
 
 默认地址为 `127.0.0.1:9222`，不要把该端口转发给其他机器。
+
+### 按账号选择 EIP 的 DNAT
+
+DNAT 接口读取本地凭据中的 SenseCore 用户名，并从服务端 EIP 列表中自动选择
+显示名账号区间包含该用户名的 EIP。例如用户名数字部分位于 `202500601` 至
+`202500750` 时，会选择 `L202500601_L202500750_01e_` 前缀对应的 EIP。命令中
+没有手动 EIP 选择参数；用户名格式错误、找不到匹配项、存在多个匹配项，或匹配
+资源不属于既定订阅、资源组和 `cn-sh-01e` 可用区时，都会在写请求前终止。
+
+先启动带本地 CDP 的可见浏览器：
+
+```bash
+slaigpus viewer --cdp
+```
+
+在另一个终端规划一条目的 IP 规则：
+
+```bash
+slaigpus dnat create \
+  --protocol tcp \
+  --eip-port 2222 \
+  --target-ip 10.0.0.2 \
+  --target-port 22
+```
+
+默认只输出计划，不创建规则。确认后显式增加 `--apply`：
+
+```bash
+slaigpus dnat create \
+  --protocol tcp \
+  --eip-port 8000-8005 \
+  --target-ip 10.0.0.2 \
+  --target-port 9000-9005 \
+  --apply
+```
+
+支持 `tcp`、`udp`，端口或端口段必须位于 `1-65535`，单条端口段最多包含 500
+个端口，公网和目的端口数量必须一致。每次计划或创建都会重新读取 EIP 列表、
+所选 EIP 状态和全部现有规则，检查账号区间、资源 ID、并发变更数量和同协议
+公网端口重叠。
+当前接口只创建“目的实例类型 = IP地址”的规则；目的 IP 是否属于该 VPC 仍由
+SenseCore API 做最终校验。
+
+脚本可增加 `--json` 获取稳定字段，用 `--credentials-file` 指定另一份私有凭据，
+或用 `--cdp-port` 连接 viewer 配置的其他 loopback 端口。创建 POST 只发送一次且
+不会自动重试；如果命令报告结果不确定，应先在输出所选 EIP 的目的地址转换列表
+中按规则名查询，再决定下一步。
 
 ### CCI 续期控制器
 
@@ -440,7 +489,7 @@ slaigpus cci renew --cci CCI_NAME_OR_DISPLAY_NAME --if-due --json
 | `--poll-interval DURATION` | `30s` | 状态轮询间隔 |
 | `--wait-timeout DURATION` | `15m` | 保存镜像和等待重启的上限 |
 | `--direct` | 使用 TOML | 本次临时强制直连 |
-| `--ssh-host ALIAS` | 使用 TOML | 本次临时使用 SSH `Host` 别名，与 `--direct` 互斥 |
+| `--ssh-host DESTINATION` | 使用 TOML | 本次临时使用 SSH `Host` 别名或 `user@host`，与 `--direct` 互斥 |
 | `--credentials-file PATH` | 配置助手保存的文件 | 使用指定绝对路径的凭据 JSON |
 | `--headless` | 否 | 临时浏览器只允许无头登录，失败时直接退出 |
 | `--cdp-port PORT` | 自动发现或新建浏览器 | 连接已经运行的 slaigpus Chrome |
@@ -548,7 +597,7 @@ slaigpus acp profiles --resource-class spot --json
 | `--no-template` | 否 | 显式声明使用 portable defaults，与 `--template-job` 互斥 |
 | `--clear-mounts` | 否 | 将模板挂载替换为空列表 |
 | `--clear-env` | 否 | 将模板环境变量替换为空列表 |
-| `--direct` / `--ssh-host ALIAS` | 使用 TOML | 临时覆盖网络方式，二者互斥 |
+| `--direct` / `--ssh-host DESTINATION` | 使用 TOML | 临时覆盖网络方式，SSH 目标可为别名或 `user@host`，二者互斥 |
 | `--headless` | 否 | 临时浏览器只允许无头登录 |
 | `--json` | 否 | 输出脱敏的机器可读计划或结果 |
 | `--apply` | 否 | 真正创建任务；不传时始终为 dry-run |

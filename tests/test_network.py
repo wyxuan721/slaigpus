@@ -1,4 +1,4 @@
-"""Offline contracts for direct access and optional SSH Host aliases."""
+"""Offline contracts for direct access and optional SSH destinations."""
 
 from __future__ import annotations
 
@@ -45,6 +45,20 @@ def test_sensecore_proxy_needs_only_an_openssh_host_alias(tmp_path):
     assert config.sensecore is not None
     assert config.sensecore.mode == "ssh"
     assert config.sensecore.ssh_host == "sensecore-proxy"
+
+
+def test_sensecore_proxy_accepts_user_at_host_destination(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[sensecore.network]\nssh_host = \"wyx@100.116.172.2\"\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+
+    assert config.sensecore is not None
+    assert config.sensecore.mode == "ssh"
+    assert config.sensecore.ssh_host == "wyx@100.116.172.2"
 
 
 @pytest.mark.parametrize(
@@ -96,12 +110,14 @@ def test_sensecore_network_rejects_ssh_implementation_details(tmp_path, extra):
         "two words",
         "../jump",
         "a/b",
-        "user@gateway",
+        "user@@gateway",
+        "user@",
+        "@gateway",
         "gateway:22",
     ],
 )
-def test_ssh_alias_rejects_values_that_are_not_single_safe_host_tokens(alias):
-    with pytest.raises(ConfigError, match="SSH Host alias"):
+def test_ssh_alias_rejects_values_that_are_not_single_safe_destinations(alias):
+    with pytest.raises(ConfigError, match="SSH destination"):
         validate_ssh_alias(alias)
 
 

@@ -37,6 +37,16 @@ from .cci import (
     SenseCoreClient,
     TargetResolver,
 )
+from .dnat import (
+    DNATClient,
+    DNATCreatePlan,
+    DNATCreateResult,
+    DNATError,
+    DNATSpec,
+    EIP_RESOURCE_GROUP,
+    EIP_SUBSCRIPTION,
+    EIP_ZONE,
+)
 
 __all__ = [
     "SSHTunnel",
@@ -61,6 +71,14 @@ __all__ = [
     "SenseCoreClient",
     "TargetResolver",
     "RenewalSupervisor",
+    "DNATClient",
+    "DNATCreatePlan",
+    "DNATCreateResult",
+    "DNATError",
+    "DNATSpec",
+    "EIP_RESOURCE_GROUP",
+    "EIP_SUBSCRIPTION",
+    "EIP_ZONE",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

@@ -138,7 +138,7 @@ def test_guided_ra_ssh_configuration_reprompts_alias_and_preserves_sites(
     assert "# keep this generic site" in config_path.read_text(encoding="utf-8")
     rendered = capsys.readouterr().out
     assert "~/.ssh/config" in rendered
-    assert "别名无效" in rendered
+    assert "SSH 目标无效" in rendered
     assert "闲时资源（RA）" in rendered
 
 
