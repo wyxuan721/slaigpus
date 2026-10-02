@@ -408,19 +408,41 @@ class DNATClient:
         return selected
 
     def _list_rules(self, eip_rid: str) -> List[Dict[str, Any]]:
-        data = self._request(
-            "GET", self._eip_base_url(eip_rid) + "/dnatRules", retry_auth=True
-        )
-        if not isinstance(data, Mapping):
-            raise DNATError("DNAT rule list response is not an object")
-        raw_rules = data.get("dnat_rules") or []
-        if not isinstance(raw_rules, list) or not all(
-            isinstance(rule, Mapping) for rule in raw_rules
-        ):
-            raise DNATError("DNAT rule list is invalid")
-        rules = [dict(rule) for rule in raw_rules]
-        total_size = data.get("total_size")
-        if isinstance(total_size, int) and total_size > len(rules):
+        url = self._eip_base_url(eip_rid) + "/dnatRules"
+        rules: List[Dict[str, Any]] = []
+        page_token: Optional[Any] = None
+        total_size: Optional[int] = None
+        seen_tokens: set[str] = set()
+        while True:
+            params: Dict[str, Any] = {"page_size": MAX_PORTS_PER_RULE}
+            if page_token not in (None, "", 0, "0"):
+                token = str(page_token)
+                if token in seen_tokens:
+                    raise DNATError("SenseCore DNAT pagination repeated a page token")
+                seen_tokens.add(token)
+                params["page_token"] = token
+            data = self._request(
+                "GET", url, params=params, retry_auth=True
+            )
+            if not isinstance(data, Mapping):
+                raise DNATError("DNAT rule list response is not an object")
+            raw_rules = data.get("dnat_rules") or []
+            if not isinstance(raw_rules, list) or not all(
+                isinstance(rule, Mapping) for rule in raw_rules
+            ):
+                raise DNATError("DNAT rule list is invalid")
+            rules.extend(dict(rule) for rule in raw_rules)
+            raw_total = data.get("total_size")
+            if isinstance(raw_total, int) and raw_total >= 0:
+                if total_size is None:
+                    total_size = raw_total
+                elif total_size != raw_total:
+                    raise DNATError("SenseCore DNAT total size changed during pagination")
+            next_token = data.get("next_page_token")
+            if next_token in (None, "", 0, "0"):
+                break
+            page_token = next_token
+        if total_size is not None and total_size != len(rules):
             raise DNATError(
                 "SenseCore did not return every existing DNAT rule; refusing to create"
             )

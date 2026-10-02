@@ -26,7 +26,7 @@ from slaigpus.cci import (  # noqa: E402
     DEFAULT_RENEW_AFTER,
     DEFAULT_WORKSPACE,
 )
-from slaigpus.cdp import CDPTimeout  # noqa: E402
+from slaigpus.cdp import CDPError, CDPTimeout  # noqa: E402
 from slaigpus.config import (  # noqa: E402
     DEFAULT_SITE_NAME,
     DEFAULT_SSH_HOST,
@@ -35,6 +35,12 @@ from slaigpus.config import (  # noqa: E402
     Site,
 )
 from slaigpus.tunnel import SSHTunnel  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolate_cli_config(monkeypatch):
+    """Offline CLI tests must not load the invoking user's SenseCore route."""
+    monkeypatch.setattr(cli, "load_config", lambda _path=None: Config())
 
 
 def _parse(*args: str):
@@ -2127,6 +2133,108 @@ def test_cci_worker_expired_headless_login_returns_to_visible_bootstrap(
     assert worker.error is None
 
 
+@pytest.mark.parametrize("reauthenticated", [True, False])
+def test_headless_controller_reauthenticates_expired_session_once(
+    monkeypatch, tmp_path, reauthenticated,
+):
+    site = Site(
+        "sensecore", DEFAULT_SSH_HOST, DEFAULT_URL,
+        profile_dir=tmp_path / "work",
+    )
+    launches = []
+    watched = []
+    _patch_worker_launch(monkeypatch, launches)
+
+    class ChallengeTransport(_WorkerTransport):
+        def inspect_login_page(self, *, timeout):
+            return "challenge"
+
+    first = _WorkerTransport(auth=_FakeAuth(object()), graceful=True)
+    second = (
+        _WorkerTransport(auth=_FakeAuth(object()), graceful=True)
+        if reauthenticated else ChallengeTransport(graceful=True)
+    )
+    transports = iter([first, second])
+    monkeypatch.setattr(cli, "_make_browser_transport", lambda *_a, **_k: next(transports))
+
+    def make_supervisor(transport, _site, _options):
+        class Supervisor:
+            def watch(self, *, stop_event):
+                watched.append(transport)
+                if transport is first:
+                    transport.auth.value = None
+                    transport.login_required = True
+                    raise CDPTimeout("authorization expired")
+                stop_event.set()
+
+        return Supervisor()
+
+    monkeypatch.setattr(cli, "_make_supervisor", make_supervisor)
+    worker = cli._CCIWatchWorker(
+        site, cli._cci_options(_parse("controller")), socks_port=1080,
+        headless_only=True,
+    )
+    worker.stop_event = _FastEvent()
+    worker._run()
+
+    assert [call[0]["headless"] for call in launches] == [True, True]
+    assert watched == ([first, second] if reauthenticated else [first])
+    assert first.close_calls == second.close_calls == 1
+    assert first.close_browser_calls == second.close_browser_calls == 1
+    assert worker.finished_event.is_set()
+    if reauthenticated:
+        assert worker.error is None
+    else:
+        assert isinstance(worker.error, CCIError)
+        assert "could not log in" in str(worker.error)
+
+
+@pytest.mark.parametrize(
+    ("headless", "unsupported"), [(True, False), (True, True), (False, False)]
+)
+def test_cci_worker_backgrounds_only_authenticated_headless_browser(
+    monkeypatch, tmp_path, headless, unsupported,
+):
+    site = Site(
+        "sensecore", DEFAULT_SSH_HOST, DEFAULT_URL,
+        profile_dir=tmp_path / "work",
+    )
+    launches = []
+    watched = []
+    _patch_worker_launch(monkeypatch, launches)
+
+    class BackgroundTransport(_WorkerTransport):
+        def set_backgrounded(self, value):
+            self.events.append(("background", value))
+            if unsupported:
+                raise CDPError("window state unsupported")
+            return True
+
+    transport = BackgroundTransport(auth=_FakeAuth(object()), graceful=True)
+    monkeypatch.setattr(cli, "_make_browser_transport", lambda *_a, **_k: transport)
+
+    class Supervisor:
+        def watch(self, *, stop_event):
+            assert transport.auth.current() is not None
+            assert transport.events == [
+                ("background", False), ("inspect", 30.0), ("background", True),
+            ]
+            watched.append(transport)
+
+    monkeypatch.setattr(cli, "_make_supervisor", lambda *_a: Supervisor())
+    worker = cli._CCIWatchWorker(
+        site, cli._cci_options(_parse("open")), socks_port=1080,
+    )
+    worker._wait_for_visible_login = lambda *_a: "headless"
+
+    assert worker._run_browser(headless=headless) == (
+        "finished" if headless else "headless"
+    )
+    assert watched == ([transport] if headless else [])
+    if not headless:
+        assert transport.events == []
+
+
 def test_cci_worker_rebuilds_a_broken_runtime_transport(monkeypatch, tmp_path):
     site = Site(
         "sensecore",
@@ -2140,6 +2248,11 @@ def test_cci_worker_rebuilds_a_broken_runtime_transport(monkeypatch, tmp_path):
         _WorkerTransport(auth=_FakeAuth(object())),
         _WorkerTransport(auth=_FakeAuth(object())),
     ]
+    for transport in transports:
+        transport.background_states = []
+        transport.set_backgrounded = (
+            lambda state, selected=transport: selected.background_states.append(state)
+        )
     watched = []
     messages = []
     _patch_worker_launch(monkeypatch, launches)
@@ -2150,6 +2263,7 @@ def test_cci_worker_rebuilds_a_broken_runtime_transport(monkeypatch, tmp_path):
     def make_supervisor(transport, _site, _options):
         class Supervisor:
             def watch(self, *, stop_event):
+                assert transport.background_states == [False, True]
                 watched.append(transport)
                 if len(watched) == 1:
                     transport.broken = True
@@ -3421,6 +3535,7 @@ def test_linux_automatic_login_rejects_non_executable_system_target(monkeypatch)
     assert cli._trusted_automatic_login_chrome(cli.default_site()) is None
 
 
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
 @pytest.mark.parametrize(
     "browser_case",
     [
@@ -3431,7 +3546,7 @@ def test_linux_automatic_login_rejects_non_executable_system_target(monkeypatch)
     ],
 )
 def test_custom_or_nonfixed_chrome_never_constructs_or_reads_credentials(
-    monkeypatch, tmp_path, browser_case
+    monkeypatch, tmp_path, browser_case, platform
 ):
     site = Site(
         "sensecore",
@@ -3439,6 +3554,7 @@ def test_custom_or_nonfixed_chrome_never_constructs_or_reads_credentials(
         DEFAULT_URL,
         profile_dir=tmp_path / "work",
     )
+    monkeypatch.setattr(cli.sys, "platform", platform)
     monkeypatch.delenv("SLAIGPUS_CHROME", raising=False)
 
     if browser_case == "chrome_args":
@@ -3448,6 +3564,9 @@ def test_custom_or_nonfixed_chrome_never_constructs_or_reads_credentials(
     elif browser_case == "SLAIGPUS_CHROME":
         monkeypatch.setenv("SLAIGPUS_CHROME", "/custom/browser-from-environment")
     else:
+        # Linux checks fixed system paths instead of find_chrome/PATH.  Model
+        # a host without a trusted system installation in this case.
+        monkeypatch.setattr(cli, "_trusted_linux_chrome_candidate", lambda _path: None)
         monkeypatch.setattr(
             cli,
             "find_chrome",

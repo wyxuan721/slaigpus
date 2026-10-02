@@ -1382,6 +1382,16 @@ class _CCIWatchWorker:
                 return "stop"
         return "stop"
 
+    @staticmethod
+    def _set_browser_backgrounded(transport: Any, backgrounded: bool) -> None:
+        """Keep optional rendering controls from interrupting CCI supervision."""
+        try:
+            setter = getattr(transport, "set_backgrounded", None)
+            if callable(setter):
+                setter(backgrounded)
+        except Exception:
+            pass
+
     def _run_browser(self, *, headless: bool) -> str:
         chrome = self._launch_automation_chrome(headless=headless)
         try:
@@ -1403,6 +1413,12 @@ class _CCIWatchWorker:
                     transport.start(chrome)
                     started = True
                     self.ready_event.set()
+
+                    if headless:
+                        # A rebuilt transport may reuse a minimized window.
+                        # Login uses animation-frame callbacks, so restore it
+                        # before inspecting/submitting the trusted login form.
+                        self._set_browser_backgrounded(transport, False)
 
                     if not headless:
                         outcome = self._wait_for_visible_login(transport, chrome)
@@ -1434,6 +1450,11 @@ class _CCIWatchWorker:
                         self._finish_browser(transport, chrome)
                         return "login"
 
+                    if headless:
+                        # Keep the authenticated page and WebGL capabilities,
+                        # but stop its decorative homepage from drawing at 60Hz
+                        # while the controller performs API work in the background.
+                        self._set_browser_backgrounded(transport, True)
                     supervisor = _make_supervisor(transport, self.site, self.options)
                     supervisor.watch(stop_event=self.stop_event)
                     outcome = "stop" if self.stop_event.is_set() else "finished"
@@ -1467,6 +1488,14 @@ class _CCIWatchWorker:
                                 "Chrome at the exact enterprise login page"
                             )
                         self._finish_browser(transport, chrome)
+                        if self.headless_only:
+                            # An expired authenticated session is a new login
+                            # episode.  Rebuild from the fixed enterprise entry
+                            # and reuse the normal automatic-login checks.  A
+                            # failed new login still returns "login" and exits.
+                            if self.stop_event.wait(1.0):
+                                return "stop"
+                            return "rebuild"
                         return "login"
                     if started and bool(getattr(transport, "broken", False)):
                         info(

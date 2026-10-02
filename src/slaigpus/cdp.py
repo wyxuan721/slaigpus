@@ -1599,14 +1599,31 @@ _LOGIN_SUBMIT_FUNCTION = """async function(username, passwordValue, trustedChall
       match.button.disabled) {
     return "rejected";
   }
-  const Submit = typeof SubmitEvent === "function" ? SubmitEvent : Event;
-  const submitEvent = new Submit("submit", {
-    bubbles: true, cancelable: true, submitter: match.button
-  });
-  // React/Ant Design's hydrated handler must cancel the native default.  If
-  // it does not, do not invoke click()/requestSubmit(): either could serialize
-  // credentials into a default GET URL or an unexpected native endpoint.
-  return match.form.dispatchEvent(submitEvent) === false ? "submitted" : "rejected";
+  // The live form handles the button's click, not a synthetic submit event.
+  // Block the browser's native form fallback first: with no method/action on
+  // this form it would otherwise serialize credentials into a GET URL if the
+  // page's JavaScript handler is absent or not yet hydrated.  The capture
+  // listener does not stop propagation, so the app's click/submit handlers
+  // can still perform their normal authenticated request.
+  document.addEventListener("submit", (event) => {
+    if (event.target === match.form) Event.prototype.preventDefault.call(event);
+  }, true);
+  // A successful click can navigate and destroy this execution context.
+  // Schedule it after the CDP function returns, and recheck the trusted form
+  // so a rerender or a new challenge cannot receive stale credentials.
+  setTimeout(() => {
+    if (!pageAllowed() || hardChallengePresent()) return;
+    const current = matchLoginForm();
+    if (!current || current.form !== match.form ||
+        current.username !== usernameInput || current.tenant !== tenant ||
+        current.password !== password || current.button !== match.button ||
+        usernameInput.value !== username || password.value !== passwordValue ||
+        tenant.value !== "zhicheng" || match.button.disabled) return;
+    match.button.dispatchEvent(new MouseEvent("click", {
+      bubbles: true, cancelable: true, view: window
+    }));
+  }, 0);
+  return "submitted";
 }"""
 
 
@@ -1686,6 +1703,7 @@ class BrowserFetchTransport:
         self._target_owned = False
         self._session_id: Optional[str] = None
         self._execution_context_id: Optional[int] = None
+        self._backgrounded = False
         self._started = False
         self._closed = False
         self._broken = threading.Event()
@@ -2502,27 +2520,61 @@ class BrowserFetchTransport:
                 self._broken.set()
 
     @staticmethod
-    def _minimize_target_window(connection: Any, target_id: str) -> None:
-        """Best-effort fallback for Chrome versions without create-time state."""
+    def _set_target_window_state(
+        connection: Any, target_id: str, state: str
+    ) -> bool:
+        """Best-effort window state change without changing page capabilities."""
         try:
             result = connection.call(
-                "Browser.getWindowForTarget", {"targetId": target_id}
+                "Browser.getWindowForTarget", {"targetId": target_id}, timeout=2.0
             )
             window_id = result.get("windowId")
             if not isinstance(window_id, int) or isinstance(window_id, bool):
-                return
+                return False
             connection.call(
                 "Browser.setWindowBounds",
                 {
                     "windowId": window_id,
-                    "bounds": {"windowState": "minimized"},
+                    "bounds": {"windowState": state},
                 },
+                timeout=2.0,
             )
+            return True
         except Exception:
-            # Creating an independent background window is still preferable to
-            # placing the automation page in the user's working window.  Older
-            # platforms may not implement Browser window bounds at all.
-            pass
+            # Older Chrome/platforms may not implement window bounds.  A
+            # rendering optimization must never stop authentication or requests.
+            return False
+
+    @staticmethod
+    def _minimize_target_window(connection: Any, target_id: str) -> None:
+        """Best-effort fallback for Chrome versions without create-time state."""
+        BrowserFetchTransport._set_target_window_state(
+            connection, target_id, "minimized"
+        )
+
+    def set_backgrounded(self, backgrounded: bool) -> bool:
+        """Pause foreground drawing while keeping the page and fetch available.
+
+        The headless controller calls this only after login.  Restoring normal
+        window state before login/auth refresh lets animation-frame callbacks
+        run again without disabling WebGL or replacing the authenticated page.
+        """
+        with self._lock:
+            if (
+                not self._started
+                or self.broken
+                or self._connection is None
+                or self._target_id is None
+            ):
+                return False
+            changed = self._set_target_window_state(
+                self._connection,
+                self._target_id,
+                "minimized" if backgrounded else "normal",
+            )
+            if changed:
+                self._backgrounded = bool(backgrounded)
+            return changed
 
     def _create_automation_target(self, connection: Any) -> str:
         """Create the least-visible isolated target supported by this Chrome."""
@@ -3218,6 +3270,16 @@ class BrowserFetchTransport:
         self._ensure_started()
         if self._connection is None or self._session_id is None:
             raise BrowserFetchError("browser transport is not started")
+        backgrounded = self._backgrounded
+        if backgrounded:
+            self.set_backgrounded(False)
+        try:
+            return self._refresh_auth(timeout)
+        finally:
+            if backgrounded:
+                self.set_backgrounded(True)
+
+    def _refresh_auth(self, timeout: Optional[float]) -> AuthLease:
         current = self.auth.current()
         generation = current.generation if current is not None else 0
         self._execution_context_id = None
@@ -3294,6 +3356,7 @@ class BrowserFetchTransport:
         self._target_owned = False
         self._session_id = None
         self._execution_context_id = None
+        self._backgrounded = False
         self._started = False
         self._reset_login_flow()
 

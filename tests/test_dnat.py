@@ -399,6 +399,47 @@ def test_incomplete_rule_list_fails_closed():
         _client(transport).plan_create(DNATSpec("tcp", 22, "10.0.0.2", 22))
 
 
+def test_dnat_rule_list_follows_server_pagination():
+    first = _rule(name="first", port="2000")
+    second = _rule(name="second", port="2001")
+
+    class PagedTransport(FakeTransport):
+        def request(self, method, url, *, params=None, **kwargs):
+            if method == "GET" and url == RULES_URL:
+                self.calls.append(
+                    (
+                        method,
+                        url,
+                        params,
+                        kwargs.get("json_body"),
+                        kwargs.get("timeout", 60.0),
+                    )
+                )
+                if params == {"page_size": 500}:
+                    return {
+                        "dnat_rules": [first],
+                        "total_size": 2,
+                        "next_page_token": "2",
+                    }
+                if params == {"page_size": 500, "page_token": "2"}:
+                    return {
+                        "dnat_rules": [second],
+                        "total_size": 2,
+                        "next_page_token": "0",
+                    }
+                raise AssertionError(f"unexpected pagination params: {params!r}")
+            return super().request(method, url, params=params, **kwargs)
+
+    transport = PagedTransport()
+    plan = _client(transport).plan_create(DNATSpec("tcp", 22, "10.0.0.2", 22))
+    assert plan.spec.target_ip == "10.0.0.2"
+    rule_calls = [call for call in transport.calls if call[1] == RULES_URL]
+    assert [call[2] for call in rule_calls] == [
+        {"page_size": 500},
+        {"page_size": 500, "page_token": "2"},
+    ]
+
+
 def test_ten_in_flight_changes_fail_closed_without_treating_total_as_the_limit():
     changing = [
         _rule(

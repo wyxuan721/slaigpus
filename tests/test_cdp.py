@@ -2483,13 +2483,34 @@ class HTMLElement {
   querySelectorAll(selector) { return select(this.children, selector); }
   dispatchEvent(event) {
     if (this.tagName === "form" && event.type === "submit") {
+      event.target = this;
+      if (globalThis.document.submitCapture) {
+        globalThis.document.submitCapture(event);
+      }
       this.submits += 1;
-      return this.cancelSubmit === true ? false : true;
+      if (!event.defaultPrevented && !this.cancelSubmit) {
+        globalThis.nativeSubmissions += 1;
+      }
+      return event.defaultPrevented || this.cancelSubmit === true ? false : true;
+    }
+    if (this.tagName === "button" && event.type === "click") {
+      this.clicks += 1;
+      if (this.clickOnlyRequest) globalThis.applicationRequests += 1;
+      if (this.type === "submit" && this.form) {
+        this.form.dispatchEvent(new Event("submit", {cancelable: true}));
+      }
+      return true;
     }
     if (typeof globalThis.onInputEvent === "function") globalThis.onInputEvent(this, event);
     return true;
   }
-  click() { this.clicks += 1; }
+  click() {
+    this.clicks += 1;
+    if (this.clickOnlyRequest) globalThis.applicationRequests += 1;
+    if (this.type === "submit" && this.form) {
+      this.form.dispatchEvent(new Event("submit", {cancelable: true}));
+    }
+  }
 }
 
 class HTMLInputElement extends HTMLElement {
@@ -2525,7 +2546,12 @@ function select(elements, expression) {
 
 globalThis.HTMLElement = HTMLElement;
 globalThis.HTMLInputElement = HTMLInputElement;
-globalThis.Event = class Event { constructor(type, options) { this.type = type; this.options = options; } };
+globalThis.Event = class Event {
+  constructor(type, options) { this.type = type; this.options = options; this.defaultPrevented = false; }
+  preventDefault() { this.defaultPrevented = true; }
+};
+globalThis.MouseEvent = class MouseEvent extends Event {};
+globalThis.window = {};
 globalThis.getComputedStyle = (element) => ({
   display: element.visible ? "block" : "none",
   visibility: "visible",
@@ -2561,6 +2587,8 @@ function build(options = {}) {
     class: options.buttonClass || "ant-btn login_submit"
   });
   button.type = "submit";
+  button.form = form;
+  button.clickOnlyRequest = options.clickOnlyRequest === true;
   let tenant = null;
   if (options.extraField) {
     tenant = new HTMLInputElement({
@@ -2628,7 +2656,17 @@ function build(options = {}) {
   if (options.mfaWidget) {
     elements.push(new HTMLElement("div", {class: "mfa verification-widget"}));
   }
-  globalThis.document = {querySelectorAll: (selector) => select(elements, selector)};
+  globalThis.nativeSubmissions = 0;
+  globalThis.applicationRequests = 0;
+  globalThis.document = {
+    querySelectorAll: (selector) => select(elements, selector),
+    submitCapture: null,
+    addEventListener: (type, listener, capture) => {
+      if (type === "submit" && capture === true) {
+        globalThis.document.submitCapture = listener;
+      }
+    }
+  };
   globalThis.onInputEvent = null;
   if (options.dynamic === "otp") {
     let inserted = false;
@@ -2684,6 +2722,10 @@ async function submitCase(options) {
     "fixture-password",
     options.trustedChallengeURL || ""
   );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  if (globalThis.nativeSubmissions !== 0) {
+    throw new Error("native form submission must never be allowed");
+  }
   return {
     state,
     clicks: dom.button.clicks,
@@ -2692,6 +2734,11 @@ async function submitCase(options) {
     tenant: dom.tenant === null ? null : dom.tenant.value,
     password: dom.password.value
   };
+}
+
+async function clickOnlyCase(options) {
+  const result = await submitCase({...options, clickOnlyRequest: true, hydrated: false});
+  return {state: result.state, clicks: result.clicks, requests: globalThis.applicationRequests};
 }
 
 (async () => {
@@ -2941,6 +2988,7 @@ async function submitCase(options) {
     mfaWidgetOutside: await inspectCase({...trustedIAMChallenge, mfaWidget: true}),
     submitted: await submitCase({}),
     unhydrated: await submitCase({...trustedIAMChallenge, hydrated: false}),
+    clickOnly: await clickOnlyCase(trustedIAMChallenge),
     submitLoginChallengeQuery: await submitCase({search: "?login_challenge=fixture"}),
     submitPartnerQuery: await submitCase({search: "?partner=fixture"}),
     submitWrongPath: await submitCase({pathname: "/change-password"}),
@@ -3072,9 +3120,14 @@ async function submitCase(options) {
         "tenant": None,
         "password": "",
     }
-    assert result["unhydrated"]["state"] == "rejected"
-    assert result["unhydrated"]["clicks"] == 0
+    assert result["unhydrated"]["state"] == "submitted"
+    assert result["unhydrated"]["clicks"] == 1
     assert result["unhydrated"]["submits"] == 1
+    assert result["clickOnly"] == {
+        "state": "submitted",
+        "clicks": 1,
+        "requests": 1,
+    }
     assert result["unhydrated"]["tenant"] == "zhicheng"
     for name in ("submitLoginChallengeQuery", "submitPartnerQuery"):
         assert result[name]["state"] == "rejected"
@@ -3137,7 +3190,7 @@ async function submitCase(options) {
         }
     assert result["submittedOutsideQr"] == {
         "state": "submitted",
-        "clicks": 0,
+        "clicks": 1,
         "submits": 1,
         "username": "fixture-user",
         "tenant": "zhicheng",
@@ -3149,7 +3202,7 @@ async function submitCase(options) {
     ):
         assert result[name] == {
             "state": "submitted",
-            "clicks": 0,
+            "clicks": 1,
             "submits": 1,
             "username": "fixture-user",
             "tenant": "zhicheng",
@@ -3199,7 +3252,7 @@ async function submitCase(options) {
     assert result["trustedIAMChallenge"] == "password_form"
     assert result["submittedTrustedIAMChallenge"] == {
         "state": "submitted",
-        "clicks": 0,
+        "clicks": 1,
         "submits": 1,
         "username": "fixture-user",
         "tenant": "zhicheng",
@@ -3208,7 +3261,7 @@ async function submitCase(options) {
     assert result["trustedIAMEqualsChallenge"] == "password_form"
     assert result["submittedTrustedIAMEqualsChallenge"] == {
         "state": "submitted",
-        "clicks": 0,
+        "clicks": 1,
         "submits": 1,
         "username": "fixture-user",
         "tenant": "zhicheng",
@@ -4247,6 +4300,88 @@ def test_browser_transport_starts_minimized_window_and_fetches_without_expressio
     close_target = next(call for call in fake.calls if call[0] == "Target.closeTarget")
     assert close_target[1] == {"targetId": "target-1"}
     assert not fake.closed  # injected connection remains owned by its caller
+
+
+def test_backgrounded_transport_preserves_authenticated_mutation_requests():
+    transport, auth, fake = _started_transport()
+    generation = auth.current().generation
+    assert transport.set_backgrounded(True)
+    fake.calls.clear()
+
+    response = transport.request("PATCH", CCI_URL, json_body={"template": {}})
+
+    assert response.ok
+    assert auth.current().generation == generation
+    assert not transport.broken
+    assert transport._backgrounded
+    methods = [call[0] for call in fake.calls]
+    assert "Page.navigate" not in methods
+    assert "Page.reload" not in methods
+    assert "Browser.setWindowBounds" not in methods
+    fetch = next(call for call in fake.calls if call[0] == "Runtime.callFunctionOn")
+    request = fetch[1]["arguments"][0]["value"]
+    assert request["method"] == "PATCH"
+    assert request["body"] == '{"template":{}}'
+    assert request["headers"]["Authorization"] == "Bearer browser-token"
+    transport.close()
+
+
+@pytest.mark.parametrize("failure", ["unsupported", "timeout", "invalid_window"])
+def test_background_window_failure_preserves_api_work(failure):
+    class WindowFailureCDP(FakeCDP):
+        def call(self, method, params=None, **kwargs):
+            if method == "Browser.getWindowForTarget" and failure == "invalid_window":
+                return {"windowId": True}
+            if method == "Browser.setWindowBounds":
+                if failure == "timeout":
+                    raise CDPTimeout("window change timed out")
+                raise CDPError("window state unsupported")
+            return super().call(method, params, **kwargs)
+
+    transport, _auth, _fake = _started_transport(WindowFailureCDP())
+    assert not transport.set_backgrounded(True)
+    assert transport.request("GET", CCI_URL).ok
+    assert not transport.broken
+    assert not transport.login_required
+    transport.close()
+
+
+@pytest.mark.parametrize("refresh_times_out", [False, True])
+def test_background_auth_refresh_restores_rendering_and_then_backgrounds(
+    refresh_times_out,
+):
+    class RefreshCDP(FakeCDP):
+        def call(self, method, params=None, **kwargs):
+            result = super().call(method, params, **kwargs)
+            if method == "Page.reload" and not refresh_times_out:
+                _promote(auth, request_id="new-auth", token="Bearer refreshed")
+            return result
+
+    transport, auth, fake = _started_transport(RefreshCDP())
+    assert transport.set_backgrounded(True)
+    fake.calls.clear()
+
+    if refresh_times_out:
+        with pytest.raises(CDPTimeout):
+            transport.refresh_auth(timeout=0)
+        assert transport.login_required
+    else:
+        assert transport.refresh_auth(timeout=0).authorization == "Bearer refreshed"
+        assert transport.request("GET", CCI_URL).ok
+
+    transitions = [
+        (method, params.get("bounds", {}).get("windowState"))
+        for method, params, _session, _timeout in fake.calls
+        if method in {"Browser.setWindowBounds", "Page.reload"}
+    ]
+    assert transitions == [
+        ("Browser.setWindowBounds", "normal"),
+        ("Page.reload", None),
+        ("Browser.setWindowBounds", "minimized"),
+    ]
+    assert transport._backgrounded
+    assert not transport.broken
+    transport.close()
 
 
 def test_browser_fetch_omits_cookies_but_preserves_explicit_authorization():

@@ -19,7 +19,7 @@
 ```bash
 pipx ensurepath
 pipx install \
-  https://github.com/wyxuan721/slaigpus/releases/download/v0.7.0/slaigpus-0.7.0-py3-none-any.whl
+  https://github.com/wyxuan721/slaigpus/releases/download/v0.7.1/slaigpus-0.7.1-py3-none-any.whl
 ```
 
 首次执行 `pipx ensurepath` 后应重新打开终端。验证命令已经进入 PATH：
@@ -186,14 +186,14 @@ pipx --version
 ```bash
 pipx ensurepath
 pipx install \
-  https://github.com/wyxuan721/slaigpus/releases/download/v0.7.0/slaigpus-0.7.0-py3-none-any.whl
+  https://github.com/wyxuan721/slaigpus/releases/download/v0.7.1/slaigpus-0.7.1-py3-none-any.whl
 ```
 
 强制更新或重新安装当前版本：
 
 ```bash
 pipx install --force \
-  https://github.com/wyxuan721/slaigpus/releases/download/v0.7.0/slaigpus-0.7.0-py3-none-any.whl
+  https://github.com/wyxuan721/slaigpus/releases/download/v0.7.1/slaigpus-0.7.1-py3-none-any.whl
 systemctl --user restart slaigpus-controller.service
 ```
 
@@ -380,7 +380,9 @@ slaigpus controller --cci 'CCI_NAME_OR_DISPLAY_NAME'
 4. 快照成功后更新 CCI 镜像并等待平台重启；
 5. 验证新实例、镜像和启动时间，然后进入下一轮。
 
-关闭自动续期开关后，控制器仍可保持登录态和查询状态，但不会开始下一次自动续期。登录失败时 headless 控制器会退出，不会弹出人工窗口。
+关闭自动续期开关后，控制器仍可保持登录态和查询状态，但不会开始下一次自动续期。运行期间鉴权过期时，headless 控制器会重新建立登录流程；登录失败则退出，不会弹出人工窗口。
+
+登录完成后，headless 自动化页面进入后台，暂停首页的持续绘制以降低 CPU 占用。登录和鉴权刷新期间自动恢复绘制，完成后再次进入后台；页面、WebGL、API 请求及自动续期功能均保留，可见工作浏览器不受影响。
 
 控制器必须运行在不会随目标 CCI 一起销毁的机器上，否则无法在目标重启期间完成验收和恢复。
 
