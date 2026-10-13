@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import signal
@@ -24,6 +25,7 @@ from .acp import (
     TrainingJobPlan,
     normalize_worker_overrides,
     validate_acp_workspace,
+    validate_startup_script,
 )
 from .acp_resources import (
     DEFAULT_RESOURCE_PROFILE_KEY,
@@ -2754,6 +2756,22 @@ def cmd_acp_submit(args: argparse.Namespace) -> int:
     """Plan an ACP training job, and submit only with explicit ``--apply``."""
 
     workspace = validate_acp_workspace(args.acp_workspace).resource_id
+    startup_file = getattr(args, "startup_file", None)
+    startup = args.startup
+    if startup_file is not None:
+        failed = False
+        try:
+            # A UTF-8 character takes at most four bytes. Read a bounded file,
+            # preserving CRLF rather than applying text-mode translation.
+            with Path(startup_file).expanduser().open("rb") as stream:
+                raw = stream.read(4 * 65536 + 1)
+            startup = raw.decode("utf-8")
+        except (OSError, UnicodeError):
+            failed = True
+        if failed:
+            raise CCIError("could not read UTF-8 ACP startup file")
+    startup = validate_startup_script(startup)
+    startup_sha256 = hashlib.sha256(startup.encode("utf-8")).hexdigest()
     # ``main`` resolves the student/RA default. Keep the handler's historical
     # spot fallback for embedded callers that invoke it without CLI startup.
     resource_class = args.resource_class or "spot"
@@ -2789,7 +2807,7 @@ def cmd_acp_submit(args: argparse.Namespace) -> int:
             name=args.name,
             display_name=args.display_name or None,
             image=args.image,
-            startup=args.startup,
+            startup=startup,
             resource_profile=args.resource_profile,
             resource_class=resource_class,
             replicas=worker_overrides.replicas,
@@ -2804,6 +2822,7 @@ def cmd_acp_submit(args: argparse.Namespace) -> int:
             # ACPClient.submit itself deliberately sends exactly one POST.
             client.submit(plan)
         result = _acp_plan_result(plan, applied=applied)
+        result["startup_sha256"] = startup_sha256
         if args.json:
             print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
         else:
@@ -2811,6 +2830,37 @@ def cmd_acp_submit(args: argparse.Namespace) -> int:
         return 0
 
     return _run_acp_command(args, submit)
+
+
+def cmd_acp_status(args: argparse.Namespace) -> int:
+    """Read an existing job; optionally check its startup bytes' digest."""
+    workspace = validate_acp_workspace(args.acp_workspace).resource_id
+    expected = args.expect_startup_sha256
+    if expected is not None:
+        expected = expected.lower()
+        if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+            raise CCIError("expected startup SHA-256 must contain 64 hex characters")
+
+    def read(transport: Any, _stop_event: Optional[threading.Event]) -> int:
+        result = ACPClient(transport, workspace=workspace).get_job_status(args.job)
+        if expected is not None:
+            result["startup_matches"] = result["worker"]["startup_sha256"] == expected
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
+        else:
+            print(f"job:          {result['job']}")
+            print(f"state:        {result['state']}")
+            print(f"provider id:  {result['provider_id']}")
+            worker = result["worker"]
+            print(f"replicas:     {worker['replicas']}")
+            print(f"image:        {worker['image']}")
+            print(f"specs:        {', '.join(worker['resource_specs'])}")
+            print(f"startup SHA:  {worker['startup_sha256']}")
+            if expected is not None:
+                print(f"startup match:{' yes' if result['startup_matches'] else ' no'}")
+        return 1 if result.get("startup_matches") is False else 0
+
+    return _run_acp_command(args, read)
 
 
 def _print_dnat_result(result: Mapping[str, Any]) -> None:
@@ -3532,7 +3582,7 @@ def _command_needs_initial_configuration(args: argparse.Namespace) -> bool:
             "watch",
         }
     if command == "acp":
-        return getattr(args, "acp_cmd", "") in {"submit", "logs"}
+        return getattr(args, "acp_cmd", "") in {"submit", "logs", "status"}
     return False
 
 
@@ -3963,12 +4013,16 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="private container image for the Worker role",
     )
-    p_acp_submit.add_argument(
+    startup_source = p_acp_submit.add_mutually_exclusive_group(required=True)
+    startup_source.add_argument(
         "--command",
         "--startup",
         dest="startup",
-        required=True,
         help="Worker startup command/script",
+    )
+    startup_source.add_argument(
+        "--startup-file", type=Path, metavar="FILE",
+        help="read an UTF-8 startup script from FILE (contents are sent, not its path)",
     )
     template_source = p_acp_submit.add_mutually_exclusive_group()
     template_source.add_argument(
@@ -4039,6 +4093,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit a redacted machine-readable plan/result",
     )
     p_acp_submit.set_defaults(func=cmd_acp_submit)
+
+    p_acp_status = acp_sub.add_parser(
+        "status", help="read an existing ACP job without a telemetry station",
+    )
+    _add_acp_browser_common(p_acp_status)
+    p_acp_status.add_argument("--job", required=True, help="existing training job name")
+    p_acp_status.add_argument(
+        "--expect-startup-sha256", metavar="SHA256",
+        help="return exit code 1 if the Worker's startup digest differs",
+    )
+    p_acp_status.add_argument("--json", action="store_true", help="emit selected metadata as JSON")
+    p_acp_status.set_defaults(func=cmd_acp_status)
 
     p_acp_profiles = acp_sub.add_parser(
         "profiles",

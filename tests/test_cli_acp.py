@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -256,6 +257,96 @@ def test_acp_submit_accepts_startup_alias_and_fixed_resource_choices():
     assert args.resource_profile == selected_profile
     assert args.resource_class == "standard"
     assert args.apply is True
+
+
+def test_startup_file_and_inline_command_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        _parse("acp", "submit", "--name", "job", "--image", "image:v1",
+               "--command", "true", "--startup-file", "run.sh")
+
+
+def test_startup_file_sends_exact_utf8_contents_not_a_local_path(
+    monkeypatch, tmp_path, capsys
+):
+    path = tmp_path / "run.sh"
+    raw = "#!/bin/bash\r\nprintf '你好\\n'\r\n".encode("utf-8")
+    path.write_bytes(raw)
+    captured = {}
+
+    class Client:
+        def __init__(self, _transport, workspace):
+            assert workspace == DEFAULT_WORKSPACE
+
+        def plan(self, **kwargs):
+            captured.update(kwargs)
+            return _plan(kwargs["name"])
+
+        def submit(self, _plan):
+            pytest.fail("dry-run must not submit")
+
+    monkeypatch.setattr(cli, "ACPClient", Client)
+    monkeypatch.setattr(cli, "_run_acp_command",
+                        lambda _args, operation: operation(object(), None))
+    args = _parse("acp", "submit", "--name", "job", "--image", "image:v1",
+                  "--startup-file", str(path), "--json")
+    assert cli.cmd_acp_submit(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert captured["startup"].encode("utf-8") == raw
+    assert result["startup_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert str(path) not in captured["startup"]
+    assert result["applied"] is False
+
+
+@pytest.mark.parametrize("raw", [None, b"", b"\xff", b"echo \x00secret", b"a" * 65537])
+def test_invalid_startup_file_fails_before_browser_or_requests(monkeypatch, tmp_path, raw):
+    path = tmp_path / "bad.sh"
+    if raw is not None:
+        path.write_bytes(raw)
+    monkeypatch.setattr(cli, "_run_acp_command",
+                        lambda *_a: pytest.fail("invalid local file must not open Chrome"))
+    args = _parse("acp", "submit", "--name", "job", "--image", "image:v1",
+                  "--startup-file", str(path))
+    with pytest.raises(CCIError, match="startup"):
+        cli.cmd_acp_submit(args)
+
+
+@pytest.mark.parametrize("expected, code", [(None, 0), ("a" * 64, 0), ("b" * 64, 1)])
+def test_acp_status_prints_summary_and_checks_optional_startup_hash(
+    monkeypatch, capsys, expected, code
+):
+    calls = []
+    summary = {"job": "old-job", "workspace": DEFAULT_WORKSPACE,
+               "provider_id": "provider-id", "state": "RUNNING",
+               "worker": {"replicas": 1, "image": "image:v1", "resource_specs": ["SPEC"],
+                          "startup_sha256": "a" * 64}}
+
+    class Client:
+        def __init__(self, _transport, workspace):
+            assert workspace == DEFAULT_WORKSPACE
+
+        def get_job_status(self, name):
+            calls.append(name)
+            return summary
+
+    monkeypatch.setattr(cli, "ACPClient", Client)
+    monkeypatch.setattr(cli, "_run_acp_command",
+                        lambda _args, operation: operation(object(), None))
+    argv = ["acp", "status", "--job", "old-job", "--json"]
+    if expected is not None:
+        argv += ["--expect-startup-sha256", expected]
+    assert cli.cmd_acp_status(_parse(*argv)) == code
+    output = json.loads(capsys.readouterr().out)
+    assert output["state"] == "RUNNING"
+    assert output.get("startup_matches") == (None if expected is None else expected == "a" * 64)
+    assert calls == ["old-job"]
+
+
+def test_invalid_expected_hash_fails_before_any_remote_request(monkeypatch):
+    monkeypatch.setattr(cli, "_run_acp_command",
+                        lambda *_a: pytest.fail("invalid digest must be caught locally"))
+    args = _parse("acp", "status", "--job", "job", "--expect-startup-sha256", "bad")
+    with pytest.raises(CCIError, match="SHA-256"):
+        cli.cmd_acp_status(args)
 
 
 @pytest.mark.parametrize(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import hashlib
 import json
 import sys
 import weakref
@@ -253,6 +254,46 @@ def test_supported_workspace_is_canonicalized():
     selected = validate_acp_workspace(f" {WORKSPACE}//")
 
     assert selected.resource_id == WORKSPACE
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_job_status_is_get_only_and_omits_startup_and_environment(wrapped):
+    job = _template_job(replicas=2)
+    job.update(uid="provider-job-id", state="RUNNING")
+    startup = job["roles"][0]["startup_script"]
+    if wrapped:
+        job = {"detail": job}
+    transport = RecordingTransport({"data": {"training_job": job}})
+
+    status = ACPClient(transport, WORKSPACE).get_job_status(DEFAULT_TEMPLATE_JOB)
+
+    assert status == {
+        "job": DEFAULT_TEMPLATE_JOB,
+        "workspace": WORKSPACE,
+        "provider_id": "provider-job-id",
+        "state": "RUNNING",
+        "worker": {
+            "replicas": 2,
+            "image": "registry.example.cn/team/old:v1",
+            "resource_specs": ["OLD"],
+            "startup_sha256": hashlib.sha256(startup.encode("utf-8")).hexdigest(),
+        },
+    }
+    assert [call["method"] for call in transport.calls] == ["GET"]
+    assert transport.calls[0]["url"] == ACP_ORIGIN + "/compute/acp/data/v2" + JOB_ID
+    assert startup not in json.dumps(status)
+    assert "drop-this" not in json.dumps(status)
+
+
+@pytest.mark.parametrize("change", [{"name": "different-job"}, {"state": None}])
+def test_job_status_rejects_wrong_identity_or_missing_state(change):
+    job = _template_job()
+    job["state"] = "RUNNING"
+    job.update(change)
+    transport = RecordingTransport(job)
+    with pytest.raises(ACPError, match="job status"):
+        ACPClient(transport, WORKSPACE).get_job_status(DEFAULT_TEMPLATE_JOB)
+    assert all(call["method"] == "GET" for call in transport.calls)
 
 
 def test_origins_console_and_error_hierarchy_match_cli_contract():

@@ -337,6 +337,11 @@ def _safe_text(value: Any, *, label: str, limit: int, multiline: bool) -> str:
     return value
 
 
+def validate_startup_script(value: Any) -> str:
+    """Validate a script without changing its content or newline style."""
+    return _safe_text(value, label="startup script", limit=65536, multiline=True)
+
+
 def _validate_replicas(value: Any) -> int:
     """Return a strict Worker replica count without coercing strings/bools."""
     if (
@@ -1145,6 +1150,49 @@ class ACPClient:
         )
         return _unwrap_object(data, ("training_job", "trainingJob", "job"))
 
+    def get_job(self, name: str) -> Mapping[str, Any]:
+        """Read a training job by name; no resource discovery or mutation."""
+        return self.get_template_job(name)
+
+    def get_job_status(self, name: str) -> Dict[str, Any]:
+        """Return selected job/Worker metadata without script or env contents."""
+        name = _validate_job_name(name)
+        source = self._template_source(self.get_job(name))
+        state = _first(source, ("state", "status"))
+        if (source.get("name") != name or not isinstance(state, str)
+                or not state or len(state) > 128 or not state.isprintable()):
+            raise ACPError("invalid training job status identity or state")
+        role = self._template_role(source)
+        startup = validate_startup_script(
+            _first(role, ("startup_script", "startupScript", "startup", "command"))
+        )
+        specs = _first(role, ("resource_spec", "resourceSpec"))
+        if not isinstance(specs, list) or not specs:
+            raise ACPError("invalid job status Worker resources")
+        spec_names = []
+        for spec in specs:
+            if not isinstance(spec, Mapping):
+                raise ACPError("invalid job status Worker resources")
+            spec_names.append(_validate_resource_name(spec.get("name"), "resource spec name"))
+        provider_id = _first(source, ("id", "rid", "uid"))
+        if provider_id is not None:
+            provider_id = _safe_text(provider_id, label="job id", limit=4096, multiline=False)
+        return {
+            "job": name,
+            "workspace": self.workspace_id,
+            "provider_id": provider_id,
+            "state": state,
+            "worker": {
+                "replicas": _validate_replicas(_first(role, ("total_replicas", "totalReplicas"))),
+                "image": _safe_text(
+                    _first(role, ("image_path", "imagePath", "image", "container.image_path")),
+                    label="container image", limit=2048, multiline=False,
+                ),
+                "resource_specs": spec_names,
+                "startup_sha256": hashlib.sha256(startup.encode("utf-8")).hexdigest(),
+            },
+        }
+
     def list_workers(
         self, template_job: str = DEFAULT_TEMPLATE_JOB
     ) -> List[Mapping[str, Any]]:
@@ -1523,9 +1571,7 @@ class ACPClient:
             else None
         )
         selected_startup = source_startup if startup is None else startup
-        selected_startup = _safe_text(
-            selected_startup, label="startup script", limit=65536, multiline=True
-        )
+        selected_startup = validate_startup_script(selected_startup)
 
         body: Dict[str, Any] = {}
         _copy_if_present(body, source_view, "metadata")
