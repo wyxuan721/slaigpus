@@ -44,6 +44,13 @@ def _parse(*args: str):
     return cli.build_parser().parse_args(list(args))
 
 
+def test_cli_reports_package_version(capsys):
+    with pytest.raises(SystemExit) as raised:
+        _parse("--version")
+    assert raised.value.code == 0
+    assert capsys.readouterr().out.strip() == "slaigpus 0.7.1"
+
+
 def _plan(
     name: str = "new-job",
     *,

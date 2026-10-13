@@ -81,4 +81,4 @@ __all__ = [
     "EIP_ZONE",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"

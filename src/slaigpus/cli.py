@@ -78,6 +78,7 @@ from .dnat import (
     MANAGEMENT_API_ORIGIN,
     NETWORK_API_ORIGIN,
 )
+from . import __version__
 from .monitor import (
     ACP_CONTAINER_NAME,
     ACP_HOST_IP,
@@ -3804,6 +3805,9 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--config", type=Path, default=None, help="path to config.toml")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     sub = parser.add_subparsers(dest="cmd")
 
     p_open = sub.add_parser(
