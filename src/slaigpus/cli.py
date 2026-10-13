@@ -1078,6 +1078,42 @@ def _wait_for_captured_auth_without_navigation(
             time.sleep(0.25)
 
 
+def _managed_cdp_route_retry_transport(
+    transport: Any,
+    *,
+    cdp_port: int,
+    options: Any,
+    profile_dir: Optional[Path],
+    reuse_existing_page: bool,
+) -> Any:
+    """Rebuild one stale managed-CDP target from the fixed login entry.
+
+    A standalone ``cci status --cdp-port`` attaches to a long-lived Chrome
+    owned by the controller.  That browser can retain an old page/renderer
+    session after its auth lease expires.  Reusing that target would either
+    keep the stale route or tempt callers to weaken the route validator.  A
+    bounded retry instead closes only this transport, creates one fresh target
+    through the same browser, and lets :meth:`BrowserFetchTransport.start`
+    navigate the exact parameter-free enterprise URL again.  The helper is
+    intentionally separate so it cannot be used by automatic-login paths that
+    might submit credentials a second time.
+    """
+    try:
+        transport.close()
+    except Exception:
+        # The target/session may already have disappeared.  A new transport
+        # still establishes its own CDP session and remains fail-closed.
+        pass
+    replacement = _make_browser_transport(
+        cdp_port,
+        options,
+        profile_dir=profile_dir,
+        reuse_existing_page=reuse_existing_page,
+    )
+    replacement.start(None)
+    return replacement
+
+
 class _CCIWatchWorker:
     """Own the SenseCore browser used to manage CCI debug containers.
 
@@ -2298,11 +2334,51 @@ def _run_cci_command(
                 "or configure file credentials"
             )
         if auto_result != "authenticated":
-            _wait_for_captured_auth_without_navigation(
-                transport,
-                chrome=chrome,
-                stop_event=keeper.stop_event if keeper is not None else None,
-            )
+            try:
+                _wait_for_captured_auth_without_navigation(
+                    transport,
+                    chrome=chrome,
+                    stop_event=keeper.stop_event if keeper is not None else None,
+                )
+            except CCIError as exc:
+                # A fresh-status check may attach to an already-running
+                # controller Chrome whose previous automation target has
+                # retained an expired/ambiguous renderer route.  Retry only
+                # this existing managed-CDP case, where no automatic login
+                # (and therefore no credential submission) was attempted.
+                # New browsers and interactive/manual-login paths retain the
+                # original fail-closed behavior.
+                managed_existing_cdp = (
+                    chrome is None
+                    and (requested_port != 0 or profile_endpoint is not None)
+                )
+                trusted_route_failure = (
+                    str(exc)
+                    == "the SenseCore enterprise login flow left its trusted route"
+                )
+                if not managed_existing_cdp or not trusted_route_failure:
+                    raise
+                warn(
+                    "managed SenseCore CDP target left the trusted login route; "
+                    "rebuilding one fresh target from the enterprise entry"
+                )
+                transport = _managed_cdp_route_retry_transport(
+                    transport,
+                    cdp_port=cdp_port,
+                    options=options,
+                    profile_dir=profile if not requested_port else None,
+                    reuse_existing_page=not bool(requested_port),
+                )
+                try:
+                    _wait_for_captured_auth_without_navigation(
+                        transport,
+                        chrome=None,
+                        stop_event=None,
+                    )
+                except CCIError:
+                    # Do not loop or relax the validator: one fresh target is
+                    # the complete recovery budget for this status probe.
+                    raise
         supervisor_kwargs = {}
         if requested_port or profile_endpoint is not None:
             supervisor_kwargs["include_remote_hint"] = False

@@ -1318,6 +1318,14 @@ class _RecordingBrowserTransport:
         self.close_calls += 1
 
 
+class _UntrustedRouteBrowserTransport(_RecordingBrowserTransport):
+    """A managed-CDP test double whose target has left the trusted route."""
+
+    def inspect_login_page(self, *, timeout):
+        self.events.append(("inspect", timeout))
+        return "untrusted"
+
+
 def _exercise_standalone_cci_transport(monkeypatch, tmp_path, argv, discovered_port):
     work_profile = tmp_path / "work"
     automation_profile = tmp_path / "work-automation"
@@ -1406,6 +1414,87 @@ def test_standalone_cci_explicit_port_does_not_claim_profile_ownership(
     assert calls == [(45678, None, False)]
     assert transport.start_args == [None]
     assert transport.close_calls == 1
+
+
+def test_standalone_cci_rebuilds_one_stale_managed_cdp_target(
+    monkeypatch, tmp_path
+):
+    site = Site(
+        "sensecore",
+        "sensecore-proxy",
+        DEFAULT_URL,
+        profile_dir=tmp_path / "work",
+    )
+    first = _UntrustedRouteBrowserTransport()
+    second = _RecordingBrowserTransport()
+    transports = [first, second]
+    calls = []
+
+    monkeypatch.setattr(cli, "default_site", lambda: site)
+    monkeypatch.setattr(cli, "_cdp_is_ready", lambda _port: True)
+
+    def make_transport(
+        cdp_port, _options, *, profile_dir=None, reuse_existing_page=False
+    ):
+        calls.append((cdp_port, profile_dir, reuse_existing_page))
+        return transports.pop(0)
+
+    monkeypatch.setattr(cli, "_make_browser_transport", make_transport)
+    monkeypatch.setattr(cli, "_make_supervisor", lambda *_args, **_kwargs: object())
+
+    result = cli._run_cci_command(
+        _parse("cci", "status", "--no-probe", "--cdp-port", "45678"),
+        lambda _supervisor, _stop_event: 17,
+    )
+
+    assert result == 17
+    assert calls == [(45678, None, False), (45678, None, False)]
+    assert first.start_args == [None]
+    assert second.start_args == [None]
+    assert first.close_calls == 1
+    assert second.close_calls == 1
+
+
+def test_standalone_cci_stale_target_recovery_is_bounded(
+    monkeypatch, tmp_path
+):
+    site = Site(
+        "sensecore",
+        "sensecore-proxy",
+        DEFAULT_URL,
+        profile_dir=tmp_path / "work",
+    )
+    first = _UntrustedRouteBrowserTransport()
+    second = _UntrustedRouteBrowserTransport()
+    transports = [first, second]
+    calls = []
+
+    monkeypatch.setattr(cli, "default_site", lambda: site)
+    monkeypatch.setattr(cli, "_cdp_is_ready", lambda _port: True)
+
+    def make_transport(
+        cdp_port, _options, *, profile_dir=None, reuse_existing_page=False
+    ):
+        calls.append((cdp_port, profile_dir, reuse_existing_page))
+        return transports.pop(0)
+
+    monkeypatch.setattr(cli, "_make_browser_transport", make_transport)
+    monkeypatch.setattr(cli, "_make_supervisor", lambda *_args, **_kwargs: object())
+
+    with pytest.raises(
+        CCIError,
+        match="enterprise login flow left its trusted route",
+    ):
+        cli._run_cci_command(
+            _parse("cci", "status", "--no-probe", "--cdp-port", "45678"),
+            lambda _supervisor, _stop_event: pytest.fail(
+                "operation must not run after the bounded retry fails"
+            ),
+        )
+
+    assert calls == [(45678, None, False), (45678, None, False)]
+    assert first.close_calls == 1
+    assert second.close_calls == 1
 
 
 def test_standalone_cci_launches_direct_automation_profile_without_keeper(
