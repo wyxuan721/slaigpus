@@ -258,6 +258,7 @@ class Config:
     sensecore: Optional[Site] = None
     sensecore_account_type: str = ""
     source: Optional[Path] = None
+    transfer_targets: Dict[str, "TransferTarget"] = field(default_factory=dict)
 
     def get(self, name: Optional[str]) -> Site:
         if not self.sites:
@@ -279,6 +280,69 @@ class Config:
                 + (", ".join(sorted(self.sites)) or "(none)")
             )
         return self.sites[key]
+
+
+@dataclass(frozen=True)
+class TransferTarget:
+    """File transport endpoint, separate from the browser SOCKS route."""
+
+    kind: str
+    host: str = ""
+    port: Optional[int] = None
+    proxy_jump: str = ""
+    identity_file: str = ""
+    remote: str = ""
+    config_file: str = ""
+
+
+def _coerce_transfer_targets(raw: object) -> Dict[str, TransferTarget]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or set(raw) - {"targets"}:
+        raise ConfigError("[transfer] accepts only a targets table")
+    targets = raw.get("targets", {})
+    if not isinstance(targets, dict):
+        raise ConfigError("[transfer.targets] must be a table")
+    result = {}
+    for name, entry in targets.items():
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", name) is None:
+            raise ConfigError("invalid transfer target name")
+        if not isinstance(entry, dict):
+            raise ConfigError("transfer target must be a table")
+        kind = entry.get("kind")
+        if not isinstance(kind, str):
+            raise ConfigError("transfer target kind must be ssh or rclone")
+        fields = ({"kind", "host", "port", "proxy_jump", "identity_file"}
+                  if kind == "ssh" else {"kind", "remote", "config_file"})
+        if kind not in {"ssh", "rclone"} or set(entry) - fields:
+            raise ConfigError("transfer target accepts SSH routing or rclone remote references only")
+        for value in entry.values():
+            if isinstance(value, str) and (not value or any(ord(c) < 32 for c in value)):
+                raise ConfigError("transfer target values must be nonempty text")
+        if any(not isinstance(value, str) for key, value in entry.items() if key != "port"):
+            raise ConfigError("transfer target options must be text, except the SSH port")
+        if kind == "ssh":
+            host = validate_ssh_alias(entry.get("host", ""))
+            port = entry.get("port")
+            if port is not None and (type(port) is not int or not 1 <= port <= 65535):
+                raise ConfigError("transfer SSH port must be in 1..65535")
+            jump = entry.get("proxy_jump", "")
+            # Complex ProxyJump routes can be expressed in ~/.ssh/config.
+            if jump:
+                validate_ssh_alias(jump)
+            identity = entry.get("identity_file", "")
+            if not isinstance(identity, str):
+                raise ConfigError("identity_file must be a path string")
+            result[name] = TransferTarget(kind, host, port, jump, identity)
+        else:
+            remote = entry.get("remote", "")
+            if not isinstance(remote, str) or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", remote) is None:
+                raise ConfigError("rclone remote must be a configured name, without credentials or URI")
+            config_file = entry.get("config_file", "")
+            if not isinstance(config_file, str):
+                raise ConfigError("rclone config_file must be a path string")
+            result[name] = TransferTarget(kind=kind, remote=remote, config_file=config_file)
+    return result
 
 
 def _coerce_site(name: str, raw: dict, defaults: dict) -> Site:
@@ -535,7 +599,7 @@ def load_config(explicit: Optional[Path] = None) -> Config:
     if not isinstance(data, dict):
         raise ConfigError(f"{path}: top level must be a table")
     _reject_secret_config_keys(data)
-    unknown_top_level = set(data) - {"defaults", "sites", "sensecore"}
+    unknown_top_level = set(data) - {"defaults", "sites", "sensecore", "transfer"}
     if unknown_top_level:
         raise ConfigError(
             f"{path}: unknown top-level option(s) "
@@ -573,6 +637,7 @@ def load_config(explicit: Optional[Path] = None) -> Config:
         sensecore=sensecore,
         sensecore_account_type=sensecore_account_type,
         source=path,
+        transfer_targets=_coerce_transfer_targets(data.get("transfer")),
     )
 
 

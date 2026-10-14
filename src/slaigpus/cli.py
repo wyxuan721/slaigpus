@@ -91,6 +91,7 @@ from .monitor import (
 from .network import NetworkConnection
 from .private_json import PrivateJSONError, load_private_json
 from .tunnel import TunnelError, port_is_open
+from .transfer import TransferError, add_transfer_parser
 
 
 # --------------------------------------------------------------------- output
@@ -3809,6 +3810,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
     sub = parser.add_subparsers(dest="cmd")
+    add_transfer_parser(sub)
 
     p_open = sub.add_parser(
         "open", help="open the managed Chrome and watch the SenseCore CCI"
@@ -4349,6 +4351,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         CDPError,
         ChromeError,
         CredentialStoreError,
+        TransferError,
     ) as exc:
         fail(str(exc))
         return 1

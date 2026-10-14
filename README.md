@@ -691,6 +691,83 @@ slaigpus acp logs \
 
 默认查询最近 1 小时、每页 40 条、时间倒序。Monitor 请求虽然使用 HTTP POST，但只读取日志，不创建或修改 ACP 任务。
 
+## 文件上传、下载与对象存储中转
+
+`transfer` 独立于浏览器/API 的 SOCKS 路线。它使用 OpenSSH/rsync 或已配置的 rclone remote，不需要登录 SenseCore 控制台。
+
+机器路径使用 `SSH别名:/绝对路径`。端口、密钥、复杂跳板路线可直接放在 `~/.ssh/config`；未显式设置端口时，工具保留 OpenSSH 的配置。SSH 使用 key/agent 和 `BatchMode=yes`，不等待密码输入。
+
+```bash
+# 单文件上传；目标为完整文件名
+slaigpus transfer push ./model.pt --target compute:/data/model.pt
+
+# 下载并按需验证 SHA-256（要求两端都是确切的单文件路径）
+slaigpus transfer pull --source compute:/data/model.pt \
+  --target ./model.pt --verify sha256
+
+# 上传目录内容；rsync 源末尾的 / 表示只复制内容
+slaigpus transfer copy ./src/ compute:/data/src/
+
+# 只展示计划，不连接机器、不创建传输任务
+slaigpus transfer plan ./src/ compute:/data/src/ --json
+
+# 执行后端只读预演，不复制数据
+slaigpus transfer copy ./src/ compute:/data/src/ --dry-run
+
+# 允许增量更新目标中的同名文件
+slaigpus transfer copy ./src/ compute:/data/src/ --overwrite
+```
+
+默认跳过已存在的目标文件，**不会删除源文件或目标多余文件**。需要替换时加 `--overwrite`；启用 SHA 校验时还会使用内容比较，防止相同大小/时间戳的旧文件被误判为相同。默认验证来自后端，只覆盖实际传输的文件；跳过不意味着旧文件内容相同。`--verify size`/`sha256` 会额外比较两端单文件，不递归扫描目录。远端显式验证需要 Python 3。
+
+rsync 后端需要两端安装 rsync 3.2.3+。传输写入临时文件，完成后替换目标；中断数据保留在 `.slaigpus-partial`，下次传输可以复用。目录逐文件完成，不保证整目录一次性原子替换。rclone 默认的临时文件/对象提交方式由具体 backend 决定。
+
+可以在现有 `config.toml` 中配置独立的传输别名：
+
+```toml
+[transfer.targets.gpu]
+kind = "ssh"
+host = "compute"                     # ~/.ssh/config 的 Host 别名
+# port = 2222                        # 可选，省略时保留 SSH 配置
+# proxy_jump = "gateway"             # 可选；复杂路线放在 SSH config
+# identity_file = "~/.ssh/id_ed25519" # 可选
+
+[transfer.targets.store]
+kind = "rclone"
+remote = "sensecore"                 # 先用 rclone config 建立的 remote
+# config_file = "/path/rclone.conf"   # 可选；位于执行机器上
+```
+
+对象存储凭据由 rclone 自己的私有配置、环境或 IAM 机制管理，不放进 slaigpus TOML、URI、日志或回执。使用 `rclone config` 创建 S3-compatible remote，设置账号自己的 AOSS endpoint/bucket；本机和云内机器可分别配置公网与内网 endpoint。也可配置 SFTP remote，在无法安装远端 rsync 时使用 rclone 传输。对象路径为 `store:bucket/key`，或 `aoss://store/bucket/key`；URI 中的 `store` 是配置别名。rclone 建议 1.63+。
+
+```bash
+# 本地 → AOSS（单文件目标必须包含文件名）
+slaigpus transfer copy ./data.bin store:bucket/staging/data.bin
+
+# AOSS → 已挂载 AFS 的机器；在 gpu 上执行 rclone
+slaigpus transfer copy store:bucket/staging/data.bin /afs/data/data.bin --on gpu
+
+# 从 AFS 上传到 AOSS，再从 AOSS 下载到本地
+slaigpus transfer copy /afs/results/ store:bucket/results/ --on gpu
+slaigpus transfer copy store:bucket/results/ ./results/
+```
+
+`--on gpu` 下无前缀的绝对路径属于 gpu，rclone 程序和配置也必须已在 gpu 上存在。工具不复制云凭据到远端，不安装服务、不创建 bucket、不改变 AFS 挂载。AFS 是机器上的普通目录。中转的两个步骤各有独立回执，前一步失败不会自动继续下一步。
+
+rclone 使用 `copyto`，文件复制到指定文件名，目录复制内容；**不用 `rclone sync`**，因为它会删除目标多余文件。ADS 文档支持这一传输路线，并推荐 rclone；本实现复用 rclone，不增加 ADS 重复后端。
+
+每次执行自动生成 `~/.local/state/slaigpus/transfers/*.json`（macOS 使用工具的 Application Support 目录），也可通过 `--receipt FILE` 指定。回执记录路径、路由、状态、时间、退出码及所选校验结果，不包含凭据或后端输出正文：
+
+```bash
+slaigpus transfer status /path/receipt.json --json
+slaigpus transfer resume /path/failed-receipt.json
+slaigpus transfer verify /path/completed-receipt.json --method sha256
+```
+
+`status` 显示回执中记录的状态，不查询云端任务。`resume` 新建回执并保留原失败记录；不重放仍在运行的进程，也不静默接受修改后的目标配置。源文件和目标应保持原意；SSH/rsync 可以复用未完成文件，rclone 会跳过已完成文件，但不能保证跨进程恢复每个对象的字节偏移。校验目录使用后端原生工具；`verify` 子命令只额外校验单文件。
+
+开发边界和设计见 [文件交互设计](docs/FILE_TRANSFER.md)。平台依据：[ADS](https://www.sensecore.cn/help/docs/cloud-foundation/storage/ads/)、[AOSS](https://www.sensecore.cn/help/docs/cloud-foundation/storage/aoss/)。
+
 ## 登录、安全与可靠性
 
 自动登录从精确地址 `https://zhicheng.signin.sensecore.cn/` 开始，并验证 Console/OAuth/IAM challenge 链：
